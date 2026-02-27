@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Optional
 from sqlmodel import SQLModel, Field, Column, DateTime
@@ -12,15 +13,12 @@ class UserRepoLink(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    repo_id: uuid.UUID = Field(nullable=False, index=True)
+    repo_id: uuid.UUID = Field(nullable=False)
     user_id: str = Field(nullable=False, max_length=64) # Cognito Sub
     
     role: RepoRole = Field(
-        sa_column=Column(
-            SAEnum(RepoRole, name="repo_role"),
-            nullable=False,
-            default=RepoRole.reader
-        )
+        default=RepoRole.reader, #дефолта в полето, не в колоната. за колоната оставяме сървър дефолт
+        sa_column=Column(SAEnum(RepoRole, name="repo_role"), nullable=False),
     )
     
     created_at: datetime = Field(

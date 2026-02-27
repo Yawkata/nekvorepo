@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import List, Dict, Any, Optional
 from shared.constants import RepoRole
 
 class Token(BaseModel):
@@ -10,7 +10,7 @@ class TokenData(BaseModel):
     user_id: str
     email: Optional[EmailStr] = None
     # We include permissions in the token for the "No Compromise" stateless check
-    permissions: List[dict] = [] # e.g., [{"repo_id": 1, "role": "admin"}]
+    permissions: List[Dict[str, Any]] = Field(default_factory=list) # e.g., [{"repo_id": 1, "role": "admin"}], да не е mutable по дефолт
 
 class UserRegister(BaseModel):
     email: EmailStr
