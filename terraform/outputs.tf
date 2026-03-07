@@ -23,9 +23,11 @@ output "dev_access_key_id" {
 }
 
 output "dev_secret_access_key" {
-  value = aws_iam_access_key.dev_key.secret
+  value     = aws_iam_access_key.dev_key.secret
+  sensitive = true
 }
 
 output "cognito_client_secret" {
-  value = aws_cognito_user_pool_client.client.client_secret
+  value     = aws_cognito_user_pool_client.client.client_secret
+  sensitive = true
 }
