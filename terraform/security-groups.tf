@@ -26,14 +26,22 @@ resource "aws_security_group" "rds_sg" {
   }
 }
 
+# Create a placeholder SG for your backend containers
+resource "aws_security_group" "backend_sg" {
+  name        = "${var.project_name}-backend-sg"
+  description = "Identifies backend microservices"
+  vpc_id      = module.vpc.vpc_id
+}
+
+# Update EFS SG to only allow traffic from the backend SG
 resource "aws_security_group" "efs_sg" {
   name   = "${var.project_name}-efs-sg"
   vpc_id = module.vpc.vpc_id
 
   ingress {
-    from_port   = 2049
-    to_port     = 2049
-    protocol    = "tcp"
-    cidr_blocks = [module.vpc.vpc_cidr_block]
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.backend_sg.id] # Specific source
   }
 }

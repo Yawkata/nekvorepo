@@ -1,7 +1,7 @@
 resource "aws_efs_file_system" "draft_storage" {
   creation_token = "${var.project_name}-drafts"
   encrypted      = true
-
+  
   tags = { Name = "${var.project_name}-efs" }
 }
 
