@@ -6,6 +6,6 @@ app = FastAPI(title="Identity Service")
 def read_root():
     return {"message": "Identity Service is online"}
 
-@app.get("/health")
+@app.get("/healthz")
 def liveness_probe():
     return {"status": "alive"}

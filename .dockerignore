@@ -1,0 +1,10 @@
+.git
+.gitignore
+**/__pycache__/
+**/.venv/
+**/.next/
+**/node_modules/
+terraform/
+.terraform/
+*.tfstate*
+.env
