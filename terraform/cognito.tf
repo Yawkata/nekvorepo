@@ -1,7 +1,7 @@
 resource "aws_cognito_user_pool" "pool" {
   name = "${var.project_name}-user-pool"
 
-  alias_attributes         = ["email"]
+  username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
   password_policy {
@@ -58,8 +58,8 @@ resource "aws_cognito_user_pool" "pool" {
     attribute_data_type      = "String"
     developer_only_attribute = false
     mutable                  = true
-    name                     = "name" # This matches the "name" field you send from Python
-    required                 = false  # Set to true if you want to force all users to provide it
+    name                     = "preferred_username" # This matches the "name" field you send from Python
+    required                 = false                # Set to true if you want to force all users to provide it
 
     string_attribute_constraints {
       min_length = 1
