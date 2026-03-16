@@ -45,6 +45,27 @@ resource "aws_cognito_user_pool" "pool" {
   # software_token_mfa_configuration {
   #   enabled = true
   # }
+
+  schema {
+    attribute_data_type      = "String"
+    developer_only_attribute = false
+    mutable                  = true # Users should be able to change their name later
+    name                     = "email"
+    required                 = true # This is already set by alias_attributes, but good for clarity
+  }
+
+  schema {
+    attribute_data_type      = "String"
+    developer_only_attribute = false
+    mutable                  = true
+    name                     = "name" # This matches the "name" field you send from Python
+    required                 = false  # Set to true if you want to force all users to provide it
+
+    string_attribute_constraints {
+      min_length = 1
+      max_length = 2048
+    }
+  }
 }
 
 resource "aws_cognito_user_pool_client" "client" {
@@ -59,4 +80,7 @@ resource "aws_cognito_user_pool_client" "client" {
     "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_ADMIN_USER_PASSWORD_AUTH"
   ]
+
+  read_attributes  = ["email", "name", "email_verified"]
+  write_attributes = ["email", "name"]
 }
