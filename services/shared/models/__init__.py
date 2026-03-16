@@ -1,4 +1,4 @@
 from .identity import UserRepoLink
-from .workflow import RepoHead
+from .workflow import RepoHead, RepoTree, RepoCommit
 
-__all__ = ["UserRepoLink", "RepoHead"]
+__all__ = ["UserRepoLink", "RepoHead", "RepoTree", "RepoCommit"]

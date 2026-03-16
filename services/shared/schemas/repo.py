@@ -1,16 +1,14 @@
-import uuid
 from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
-from ..constants import RepoRole
+from typing import List, Optional
+import uuid
 
-class RepoCreate(BaseModel):
+class RepoExplorerItem(BaseModel):
     name: str
-    description: Optional[str] = None
+    type: str # 'file' or 'folder'
+    content_url: Optional[str] = None # S3 Pre-signed URL
+    is_draft: bool = False
 
-class RepoRead(BaseModel):
+class RepoExplorerResponse(BaseModel):
     repo_id: uuid.UUID
-    name: str
-    latest_hash: str
-    role_in_repo: RepoRole
-    created_at: datetime
+    current_path: str
+    items: List[RepoExplorerItem]

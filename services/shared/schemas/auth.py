@@ -9,8 +9,8 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     user_id: str
     email: Optional[EmailStr] = None
-    # We include permissions in the token for the "No Compromise" stateless check
-    permissions: List[Dict[str, Any]] = Field(default_factory=list) # e.g., [{"repo_id": 1, "role": "admin"}], да не е mutable по дефолт
+    # Optimized for 2026: Map of {repo_id: role} for O(1) checks
+    permissions: Dict[str, RepoRole] = Field(default_factory=dict)
 
 class UserRegister(BaseModel):
     email: EmailStr
