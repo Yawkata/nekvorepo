@@ -5,6 +5,7 @@ from shared.constants import RepoRole
 class Token(BaseModel):
     access_token: str
     token_type: str
+    refresh_token: Optional[str] = None  # Cognito opaque refresh token (30-day TTL)
 
 class TokenData(BaseModel):
     user_id: str

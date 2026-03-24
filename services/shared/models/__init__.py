@@ -1,4 +1,11 @@
 from .identity import UserRepoLink
-from .workflow import RepoHead, RepoTree, RepoCommit
+from .workflow import RepoHead, RepoTreeRoot, RepoTreeEntry, RepoCommit
 
-__all__ = ["UserRepoLink", "RepoHead", "RepoTree", "RepoCommit"]
+# Ensure the names here match your class names in workflow.py
+__all__ = [
+    "UserRepoLink", 
+    "RepoHead", 
+    "RepoTreeRoot",   # Fixed from RepoTree
+    "RepoTreeEntry",  # Added this 
+    "RepoCommit"
+]

@@ -10,7 +10,7 @@ class UserRepoLink(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("repo_id", "user_id"),)
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    repo_id: uuid.UUID = Field(index=True)
+    repo_id: int = Field(foreign_key="repo_heads.id", index=True)
     user_id: str = Field(index=True)  # Cognito sub
     role: RepoRole = Field(
         sa_column=Column(SAEnum(RepoRole), nullable=False, server_default=RepoRole.reader)

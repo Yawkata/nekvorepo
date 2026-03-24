@@ -16,10 +16,11 @@ def create_passport_token(user_id: str, email: str, permissions: Dict[str, RepoR
     to_encode = {
         "sub": user_id,
         "email": email,
-        "permissions": permissions, # This is now the optimized Map
+        "permissions": permissions,
         "iat": datetime.now(timezone.utc),
         "exp": expire,
-        "iss": "identity-service"
+        "iss": "identity-service",
+        "aud": "internal-microservices",
     }
 
     return jwt.encode(to_encode, settings.PASSPORT_SECRET_KEY, algorithm=settings.ALGORITHM)

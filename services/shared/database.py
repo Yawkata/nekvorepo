@@ -1,19 +1,22 @@
 import os
 from sqlmodel import create_engine, Session
 
-DATABASE_URL = os.getenv("DATABASE_URL") # Provided by Docker-Compose or EKS Secrets
+DATABASE_URL = os.getenv("DATABASE_URL")  # Provided by Docker-Compose or EKS Secrets
 
-# 2026 Best Practice: Use connection pooling and SSL for RDS
-connect_args = {}
+# Statement timeout (5s) and SSL for RDS
+connect_args: dict = {
+    "options": "-c statement_timeout=5000"  # 5 000 ms = 5 s
+}
 if "amazonaws.com" in (DATABASE_URL or ""):
-    connect_args = {"sslmode": "verify-full"}
+    connect_args["sslmode"] = "verify-full"
 
 engine = create_engine(
-    DATABASE_URL, 
+    DATABASE_URL,
     echo=os.getenv("DEBUG", "false").lower() == "true",
     pool_size=20,
     max_overflow=0,
-    connect_args=connect_args
+    pool_timeout=3,      # fail fast if no connection available within 3 s
+    connect_args=connect_args,
 )
 
 def get_session():

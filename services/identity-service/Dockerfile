@@ -1,57 +1,54 @@
 # Stage 1: Build
 FROM python:3.13-slim AS builder
-
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=0 \
+ENV UV_COMPILE_BYTECODE=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+    gcc libpq-dev curl && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sS https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /root.crt
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=services/identity-service/pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=services/identity-service/uv.lock,target=uv.lock \
     uv sync --frozen --no-install-project --no-dev && \
     find .venv/lib/python3.13/site-packages/botocore/data -mindepth 1 -maxdepth 1 \
-        -not -name 'cognito-idp' \
-        -not -name 's3' \
-        -not -name '*.json' \
+        -not -name 'cognito-idp' -not -name 's3' -not -name '*.json' \
         -exec rm -rf {} +
 
 # Stage 2: Runtime
 FROM python:3.13-slim
-
-# Added 'curl' here to download the RDS CA bundle
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -g 10001 appgroup && \
-    useradd -u 10001 -g appgroup -m -s /bin/false appuser
+LABEL org.opencontainers.image.description="Identity Microservice for VCS-Hybrid App"
 
 WORKDIR /app
 
-# 1. Prepare EFS mount point
-RUN mkdir -p /mnt/efs/drafts && chown -R appuser:appgroup /mnt/efs/drafts
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 && rm -rf /var/lib/apt/lists/*
 
-# 2. Setup RDS SSL Certificate for 'verify-full' mode
-# We put it in /home/appuser/.postgresql/root.crt as expected by the Postgres driver
-RUN mkdir -p /home/appuser/.postgresql/ && \
-    curl -sS https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-    -o /home/appuser/.postgresql/root.crt && \
-    chown -R appuser:appgroup /home/appuser/.postgresql/ && \
-    chmod 0600 /home/appuser/.postgresql/root.crt
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -m -s /bin/false appuser && \
+    mkdir -p /mnt/efs/drafts /home/appuser/.postgresql/ && \
+    chown -R appuser:appgroup /mnt/efs /home/appuser/.postgresql/
 
 COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
+COPY --from=builder --chown=appuser:appgroup /root.crt /home/appuser/.postgresql/root.crt
 COPY --chown=appuser:appgroup services/identity-service/app /app/app
 COPY --chown=appuser:appgroup services/shared /app/shared
 
+RUN chmod 0600 /home/appuser/.postgresql/root.crt
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app 
+    PYTHONPATH="/app"
 
 USER appuser
 EXPOSE 8000
+
+# 2026 Maintainability: Lightweight Python health check (avoids installing curl in runtime)
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python3 -c 'import http.client; conn = http.client.HTTPConnection("localhost", 8000); conn.request("GET", "/health"); res = conn.getresponse(); exit(0 if res.status == 200 else 1)' || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers"]

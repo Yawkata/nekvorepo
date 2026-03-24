@@ -2,14 +2,24 @@ import os
 import boto3
 from botocore.config import Config
 
+# 2026 Best Practice: Create the client ONCE at the module level.
+# This reuses the underlying urllib3 connection pools across requests.
+_s3_client = boto3.client(
+    "s3", 
+    config=Config(
+        region_name=os.getenv("AWS_REGION", "us-east-1"),
+        retries={'max_attempts': 3, 'mode': 'standard'}
+    )
+)
+
 class StorageManager:
     # Local: /mnt/efs/drafts (bind mount) | EKS: /mnt/efs/drafts (EFS)
     DRAFT_BASE = os.getenv("DRAFT_STORAGE_PATH", "/mnt/efs/drafts")
     S3_BUCKET = os.getenv("S3_REPO_BUCKET")
 
     def __init__(self):
-        # Local: Uses ~/.aws/credentials | EKS: Uses IRSA (IAM Roles for Service Accounts)
-        self.s3 = boto3.client("s3", config=Config(region_name=os.getenv("AWS_REGION")))
+        # Assign the global client to the instance
+        self.s3 = _s3_client
 
     def get_draft_path(self, user_id: str, repo_id: str, file_path: str = "") -> str:
         return os.path.join(self.DRAFT_BASE, user_id, repo_id, file_path)
