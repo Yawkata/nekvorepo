@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+from datetime import timedelta
 from typing import Dict, Optional
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -72,6 +73,7 @@ def verify_cognito_token(token: str) -> Dict:
             signing_key.key,
             algorithms=["RS256"],
             audience=os.getenv("COGNITO_CLIENT_ID"),
+            leeway=timedelta(seconds=10),  # tolerate minor clock skew with AWS
         )
     except HTTPException:
         raise
