@@ -5,11 +5,13 @@ services:
       dockerfile: services/database-migrations/Dockerfile
     container_name: nekvo-migrator
     env_file: .env
-    # Ensure local container can talk to AWS (usually requires AWS_ACCESS_KEY if using IAM auth)
     environment:
       - DATABASE_URL=${DATABASE_URL}
     networks:
       - chrono_network
+    # No restart policy — migrator runs once and exits.
+    # depends_on: service_completed_successfully ensures dependents only start
+    # after this exits 0.
 
   identity-service:
     build:
@@ -24,11 +26,43 @@ services:
     depends_on:
       database-migrations:
         condition: service_completed_successfully
-    volumes:
-      - ./data/efs_drafts:/mnt/efs/drafts  # Local EFS simulation
     networks:
       - chrono_network
-    restart: always
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  workflow-service:
+    build:
+      context: .
+      dockerfile: services/workflow-service/Dockerfile
+    container_name: workflow-service
+    ports:
+      - "8002:8000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - IDENTITY_SERVICE_URL=http://identity-service:8000
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+      identity-service:
+        condition: service_healthy
+    volumes:
+      - efs_drafts:/mnt/efs/drafts  # Phase 3 placeholder (repo-service owns EFS in production)
+    networks:
+      - chrono_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 networks:
   chrono_network:

@@ -3,25 +3,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "identity-service"
+    PROJECT_NAME: str = "workflow-service"
     API_V1_STR: str = "/v1"
-
-    # AWS / Cognito
-    AWS_REGION: str = "us-east-1"
-    COGNITO_USER_POOL_ID: str
-    COGNITO_CLIENT_ID: str
-    COGNITO_CLIENT_SECRET: str
 
     # Database
     DATABASE_URL: str
 
     # Internal Passport JWT — no default; service refuses to start without it
     PASSPORT_SECRET_KEY: str
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Internal service URLs (cluster-local names in production, overridable for dev)
+    IDENTITY_SERVICE_URL: str = "http://identity-service:8000"
 
     # CORS — empty list = no CORS (secure default). Set per-environment.
-    # Example: CORS_ORIGINS=["https://app.example.com"]
     CORS_ORIGINS: list[str] = []
 
     @field_validator("PASSPORT_SECRET_KEY")

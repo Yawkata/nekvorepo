@@ -1,26 +1,29 @@
 import jwt
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any
 from app.core.config import settings
-from shared.constants import RepoRole # Add this import
 
-def create_passport_token(user_id: str, email: str, permissions: Dict[str, RepoRole]) -> str:
+
+def create_passport_token(user_id: str, email: str, repo_count: int = 0) -> str:
     """
-    Generates the signed internal Passport.
-    permissions: Dict of {repo_id: role}
+    Generates the signed internal Passport JWT.
+
+    Per spec, the JWT carries only user identity — NOT repo permissions.
+    Downstream services resolve authorization by calling the identity-service
+    role endpoint with a 60-second TTL cache, ensuring role changes propagate
+    within one TTL period rather than waiting for JWT expiry (up to 1 hour).
+
+    repo_count is an informational hint for the frontend; not used for authz.
     """
     expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES if hasattr(settings, 'ACCESS_TOKEN_EXPIRE_MINUTES') else 60
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
-
-    to_encode = {
+    payload = {
         "sub": user_id,
         "email": email,
-        "permissions": permissions,
+        "repo_count": repo_count,
         "iat": datetime.now(timezone.utc),
         "exp": expire,
         "iss": "identity-service",
         "aud": "internal-microservices",
     }
-
-    return jwt.encode(to_encode, settings.PASSPORT_SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(payload, settings.PASSPORT_SECRET_KEY, algorithm=settings.ALGORITHM)

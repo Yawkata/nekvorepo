@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
@@ -14,11 +14,11 @@ COPY services/database-migrations/pyproject.toml services/database-migrations/uv
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project && \
-    find /opt/venv/lib/python3.12/site-packages/botocore/data -mindepth 1 -maxdepth 1 \
+    find /opt/venv/lib/python3.13/site-packages/botocore/data -mindepth 1 -maxdepth 1 \
         -not -name 's3' -not -name '*.json' -exec rm -rf {} + 2>/dev/null || true
 
 # Stage 2: Runtime
-FROM python:3.12-slim
+FROM python:3.13-slim
 LABEL org.opencontainers.image.description="Database Migrations for VCS-Hybrid App"
 
 WORKDIR /app
@@ -40,8 +40,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 USER migratoruser
 
-# Basic health check to ensure alembic is reachable
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD alembic --help || exit 1
+# No HEALTHCHECK — this is a one-shot job that runs alembic upgrade and exits 0.
+# A polling health check on an intentionally exited container produces false
+# "unhealthy" noise. docker-compose uses service_completed_successfully instead.
 
 CMD ["alembic", "upgrade", "head"]

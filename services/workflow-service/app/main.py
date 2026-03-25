@@ -1,6 +1,7 @@
 import uuid
 import time
 import urllib.request
+from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,15 +12,36 @@ from shared.logging import configure_logging
 from shared.security.cognito import JWKS_URL
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.services import identity_client
 
-configure_logging("identity-service")
+configure_logging("workflow-service")
 log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan — startup and shutdown hooks
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: initialize the identity-service HTTP client
+    identity_client.setup(settings.IDENTITY_SERVICE_URL)
+    log.info("workflow_service_started", identity_url=settings.IDENTITY_SERVICE_URL)
+    yield
+    # Shutdown: close the HTTP client cleanly
+    identity_client.teardown()
+    log.info("workflow_service_stopped")
+
 
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title=settings.PROJECT_NAME, version="2026.1.0")
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version="2026.1.0",
+    lifespan=lifespan,
+)
 
 # CORS — restricted to configured origins; expose correlation ID header to JS
 app.add_middleware(
@@ -39,7 +61,7 @@ async def correlation_id_middleware(request: Request, call_next):
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(
         correlation_id=correlation_id,
-        service="identity-service",
+        service="workflow-service",
     )
     start = time.monotonic()
     response = await call_next(request)
@@ -74,12 +96,11 @@ def liveness():
 @app.get("/health", tags=["ops"])
 def readiness():
     """
-    Readiness probe — checks RDS and Cognito JWKS reachability.
-    Returns 200 when all pass, 503 when any fail.
+    Readiness probe — verifies RDS connectivity.
+    Returns 200 when all checks pass, 503 otherwise.
     """
     checks: dict = {}
 
-    # RDS
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -87,7 +108,6 @@ def readiness():
     except Exception:
         checks["rds"] = "error"
 
-    # Cognito JWKS
     try:
         with urllib.request.urlopen(
             urllib.request.Request(JWKS_URL), timeout=3

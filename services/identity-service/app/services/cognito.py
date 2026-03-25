@@ -9,9 +9,15 @@ from app.core.config import settings
 
 log = structlog.get_logger()
 
+# Module-level singleton — boto3 client creation is expensive (credential
+# resolution, connection pool init). Re-using one instance across requests
+# is the standard pattern and is thread-safe for read operations.
+_cognito_client = boto3.client("cognito-idp", region_name=settings.AWS_REGION)
+
+
 class CognitoService:
     def __init__(self):
-        self.client = boto3.client("cognito-idp", region_name=settings.AWS_REGION)
+        self.client = _cognito_client
 
     def _get_secret_hash(self, username: str) -> str:
         """Calculates the SecretHash required by Cognito when a Client Secret is used."""
@@ -23,9 +29,9 @@ class CognitoService:
         ).digest()
         return base64.b64encode(dig).decode()
     
-    def register_user(self, email: str, password: str, full_name: str):
+    def register_user(self, email: str, password: str, full_name: str) -> dict:
         try:
-            return self.client.sign_up(
+            self.client.sign_up(
                 ClientId=settings.COGNITO_CLIENT_ID,
                 SecretHash=self._get_secret_hash(email),
                 Username=email,
@@ -35,10 +41,21 @@ class CognitoService:
                     {"Name": "name", "Value": full_name},
                 ],
             )
+            return {"message": "Registration successful. Please check your email for the verification code."}
         except self.client.exceptions.UsernameExistsException:
-            raise HTTPException(status_code=400, detail="Email already registered")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=400, detail="Email already registered.")
+        except self.client.exceptions.InvalidPasswordException:
+            raise HTTPException(
+                status_code=400,
+                detail="Password does not meet requirements (min 8 chars, uppercase, number, symbol).",
+            )
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            log.error("cognito_register_failed", error_code=code)
+            raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
+        except Exception:
+            log.exception("cognito_register_unexpected_error")
+            raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
     def login(self, email: str, password: str) -> dict:
         try:
@@ -53,11 +70,35 @@ class CognitoService:
                 },
             )
             return response["AuthenticationResult"]
+        except self.client.exceptions.UserNotConfirmedException:
+            raise HTTPException(
+                status_code=403,
+                detail="Account not confirmed. Check your email for the verification code.",
+            )
         except (
             self.client.exceptions.NotAuthorizedException,
             self.client.exceptions.UserNotFoundException,
         ):
             raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    def confirm_user(self, email: str, code: str) -> None:
+        try:
+            self.client.confirm_sign_up(
+                ClientId=settings.COGNITO_CLIENT_ID,
+                SecretHash=self._get_secret_hash(email),
+                Username=email,
+                ConfirmationCode=code,
+            )
+        except self.client.exceptions.CodeMismatchException:
+            raise HTTPException(status_code=400, detail="Invalid confirmation code.")
+        except self.client.exceptions.ExpiredCodeException:
+            raise HTTPException(status_code=400, detail="Confirmation code has expired. Request a new one.")
+        except self.client.exceptions.NotAuthorizedException:
+            raise HTTPException(status_code=400, detail="Account is already confirmed.")
+        except self.client.exceptions.UserNotFoundException:
+            raise HTTPException(status_code=404, detail="User not found.")
+        except self.client.exceptions.LimitExceededException:
+            raise HTTPException(status_code=429, detail="Too many attempts. Please wait before trying again.")
 
     def refresh_session(self, refresh_token: str, email: str) -> dict:
         """
@@ -96,4 +137,4 @@ class CognitoService:
                 raise HTTPException(status_code=401, detail="Refresh token is invalid or expired")
             if code == "UserNotFoundException":
                 raise HTTPException(status_code=401, detail="User not found")
-            raise HTTPException(status_code=500, detail=f"Cognito [{code}]: {message}")
+            raise HTTPException(status_code=500, detail="Token refresh failed. Please log in again.")

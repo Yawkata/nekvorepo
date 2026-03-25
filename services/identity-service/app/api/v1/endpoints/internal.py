@@ -5,10 +5,12 @@ NOT exposed through the ALB.
 These are called by Repo-Service and Workflow-Service to manage memberships and
 perform role lookups with a 60-second TTL on the caller's side.
 """
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 from pydantic import BaseModel
 from shared.models.identity import UserRepoLink
+from shared.models.workflow import RepoHead
 from shared.constants import RepoRole
 from app.api import deps
 
@@ -16,7 +18,7 @@ router = APIRouter()
 
 
 class MembershipCreate(BaseModel):
-    repo_id: int
+    repo_id: uuid.UUID
     user_id: str
     role: RepoRole
 
@@ -53,7 +55,12 @@ def create_membership(
     db.add(link)
     db.commit()
     db.refresh(link)
-    return {"id": link.id, "repo_id": link.repo_id, "user_id": link.user_id, "role": link.role}
+    return {
+        "id": link.id,
+        "repo_id": str(link.repo_id),
+        "user_id": link.user_id,
+        "role": link.role,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +70,7 @@ def create_membership(
 # ---------------------------------------------------------------------------
 @router.get("/repos/{repo_id}/role")
 def get_member_role(
-    repo_id: int,
+    repo_id: uuid.UUID,
     user_id: str,
     db: Session = Depends(deps.get_db),
 ):
@@ -75,7 +82,7 @@ def get_member_role(
     ).first()
     if not link:
         raise HTTPException(status_code=404, detail="Membership not found.")
-    return {"repo_id": repo_id, "user_id": user_id, "role": link.role}
+    return {"repo_id": str(repo_id), "user_id": user_id, "role": link.role}
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +91,7 @@ def get_member_role(
 # ---------------------------------------------------------------------------
 @router.put("/repos/{repo_id}/members/{user_id}/role", status_code=status.HTTP_200_OK)
 def update_member_role(
-    repo_id: int,
+    repo_id: uuid.UUID,
     user_id: str,
     payload: RoleUpdate,
     db: Session = Depends(deps.get_db),
@@ -100,7 +107,7 @@ def update_member_role(
     link.role = payload.role
     db.add(link)
     db.commit()
-    return {"repo_id": repo_id, "user_id": user_id, "role": link.role}
+    return {"repo_id": str(repo_id), "user_id": user_id, "role": link.role}
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +116,7 @@ def update_member_role(
 # ---------------------------------------------------------------------------
 @router.delete("/repos/{repo_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_membership(
-    repo_id: int,
+    repo_id: uuid.UUID,
     user_id: str,
     db: Session = Depends(deps.get_db),
 ):
@@ -121,5 +128,15 @@ def delete_membership(
     ).first()
     if not link:
         raise HTTPException(status_code=404, detail="Membership not found.")
+
+    # Prevent deleting the repository owner's membership to avoid orphaned repos.
+    # A repo must always have at least one member (its owner).
+    repo = db.exec(select(RepoHead).where(RepoHead.id == repo_id)).first()
+    if repo and repo.owner_id == user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot remove the repository owner. Transfer ownership or delete the repository first.",
+        )
+
     db.delete(link)
     db.commit()

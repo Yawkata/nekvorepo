@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, status
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, Security, status
+from sqlmodel import Session, func, select
 from pydantic import BaseModel, EmailStr
-from shared.schemas.auth import UserRegister, Token
+from shared.schemas.auth import Token, TokenData
 from shared.models.identity import UserRepoLink
-from shared.security import verify_cognito_token
+from shared.security import verify_passport
+from shared.security.cognito import verify_cognito_token
 from app.api import deps
 from app.services.cognito import CognitoService
 from app.core.security import create_passport_token
@@ -11,25 +12,55 @@ from app.core.security import create_passport_token
 router = APIRouter()
 
 
+class UserRegister(BaseModel):
+    """Identity-service only — requires email-validator (intentional)."""
+    email: EmailStr
+    password: str
+    full_name: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
 
+class ConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str  # 6-digit OTP from the Cognito verification email
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
-    email: EmailStr  # needed for Cognito SecretHash calculation
+    email: EmailStr  # Required for Cognito SecretHash with username_attributes=["email"]
 
 
 def _build_passport(user_sub: str, email: str, db: Session) -> str:
-    links = db.exec(select(UserRepoLink).where(UserRepoLink.user_id == user_sub)).all()
-    permissions = {str(link.repo_id): link.role for link in links}
-    return create_passport_token(user_id=user_sub, email=email, permissions=permissions)
+    """
+    Build a Passport JWT for the given user.
+
+    The JWT carries user_id, email, and a repo_count hint — NOT permissions.
+    Downstream services resolve roles via GET /v1/internal/repos/{id}/role
+    with a 60-second TTL cache.
+    """
+    repo_count = db.exec(
+        select(func.count()).select_from(UserRepoLink).where(UserRepoLink.user_id == user_sub)
+    ).one()
+    return create_passport_token(user_id=user_sub, email=email, repo_count=repo_count)
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(payload: UserRegister, cognito: CognitoService = Depends(deps.get_cognito)):
     return cognito.register_user(payload.email, payload.password, payload.full_name)
+
+
+@router.post("/confirm", status_code=status.HTTP_200_OK)
+def confirm(payload: ConfirmRequest, cognito: CognitoService = Depends(deps.get_cognito)):
+    """
+    Confirms a newly registered account using the OTP emailed by Cognito.
+    Must be called before the first login is possible.
+    """
+    cognito.confirm_user(payload.email, payload.code)
+    return {"message": "Account confirmed. You can now log in."}
 
 
 @router.post("/login", response_model=Token)
@@ -40,8 +71,7 @@ def login(
 ):
     aws_auth = cognito.login(payload.email, payload.password)
     decoded = verify_cognito_token(aws_auth["IdToken"])
-    user_sub = decoded["sub"]
-    passport_jwt = _build_passport(user_sub, payload.email, db)
+    passport_jwt = _build_passport(decoded["sub"], payload.email, db)
     return Token(
         access_token=passport_jwt,
         token_type="bearer",
@@ -56,12 +86,18 @@ def refresh(
     cognito: CognitoService = Depends(deps.get_cognito),
 ):
     """
-    Exchange a Cognito refresh token for a new Passport JWT.
-    The frontend should call this proactively before the 1-hour access token expires.
+    Exchange a Cognito refresh token for a fresh Passport JWT.
+    The frontend should call this proactively before the 1-hour passport expires.
+    Cognito does not issue a new refresh token on refresh — the existing one
+    remains valid until its 30-day TTL.
     """
     aws_auth = cognito.refresh_session(payload.refresh_token, payload.email)
     decoded = verify_cognito_token(aws_auth["IdToken"])
-    user_sub = decoded["sub"]
-    passport_jwt = _build_passport(user_sub, payload.email, db)
-    # Cognito does not issue a new RefreshToken on refresh — return None
+    passport_jwt = _build_passport(decoded["sub"], payload.email, db)
     return Token(access_token=passport_jwt, token_type="bearer")
+
+
+@router.get("/verify-me")
+def verify_me(passport: TokenData = Security(verify_passport)):
+    """Returns the decoded passport payload for the caller. Useful for debugging."""
+    return {"status": "verified", "data": passport}
