@@ -52,8 +52,37 @@ services:
         condition: service_completed_successfully
       identity-service:
         condition: service_healthy
+    networks:
+      - chrono_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  repo-service:
+    build:
+      context: .
+      dockerfile: services/repo-service/Dockerfile
+    container_name: repo-service
+    ports:
+      - "8003:8000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - IDENTITY_SERVICE_URL=http://identity-service:8000
+      # EFS_DRAFTS_ROOT defaults to /mnt/efs/drafts inside the container.
+      # Local:      host directory bind-mounted below for easy inspection.
+      # Production: EFS CSI driver mounts at the same path — no code change needed.
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+      identity-service:
+        condition: service_healthy
     volumes:
-      - efs_drafts:/mnt/efs/drafts  # Phase 3 placeholder (repo-service owns EFS in production)
+      - ./data/efs:/mnt/efs/drafts  # bind mount for local dev/testing
     networks:
       - chrono_network
     restart: unless-stopped
@@ -68,5 +97,3 @@ networks:
   chrono_network:
     driver: bridge
 
-volumes:
-  efs_drafts:

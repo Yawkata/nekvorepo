@@ -242,3 +242,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local EFS bind mount — draft file contents should not be committed
+data/efs/*
+!data/efs/.gitkeep
