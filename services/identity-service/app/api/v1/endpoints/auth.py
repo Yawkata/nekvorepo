@@ -11,6 +11,14 @@ from app.core.security import create_passport_token
 
 router = APIRouter()
 
+_401 = {401: {"description": "Invalid or expired token"}}
+_400 = {400: {"description": "Validation error (e.g. email already registered, bad password)"}}
+_404 = {404: {"description": "User not found"}}
+
+
+class MessageResponse(BaseModel):
+    message: str
+
 
 class UserRegister(BaseModel):
     """Identity-service only — requires email-validator (intentional)."""
@@ -48,12 +56,12 @@ def _build_passport(user_sub: str, email: str, db: Session) -> str:
     return create_passport_token(user_id=user_sub, email=email, repo_count=repo_count)
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
+@router.post("/register", status_code=status.HTTP_201_CREATED, response_model=MessageResponse, responses=_400)
 def register(payload: UserRegister, cognito: CognitoService = Depends(deps.get_cognito)):
     return cognito.register_user(payload.email, payload.password, payload.full_name)
 
 
-@router.post("/confirm", status_code=status.HTTP_200_OK)
+@router.post("/confirm", status_code=status.HTTP_200_OK, response_model=MessageResponse, responses={**_400, **_404})
 def confirm(payload: ConfirmRequest, cognito: CognitoService = Depends(deps.get_cognito)):
     """
     Confirms a newly registered account using the OTP emailed by Cognito.
@@ -63,7 +71,7 @@ def confirm(payload: ConfirmRequest, cognito: CognitoService = Depends(deps.get_
     return {"message": "Account confirmed. You can now log in."}
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, responses={**_401, 403: {"description": "Account not confirmed"}})
 def login(
     payload: LoginRequest,
     db: Session = Depends(deps.get_db),
@@ -79,7 +87,7 @@ def login(
     )
 
 
-@router.post("/refresh", response_model=Token)
+@router.post("/refresh", response_model=Token, responses=_401)
 def refresh(
     payload: RefreshRequest,
     db: Session = Depends(deps.get_db),
@@ -97,7 +105,7 @@ def refresh(
     return Token(access_token=passport_jwt, token_type="bearer")
 
 
-@router.get("/verify-me")
+@router.get("/verify-me", responses=_401)
 def verify_me(passport: TokenData = Security(verify_passport)):
     """Returns the decoded passport payload for the caller. Useful for debugging."""
     return {"status": "verified", "data": passport}

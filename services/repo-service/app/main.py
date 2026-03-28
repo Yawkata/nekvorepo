@@ -39,7 +39,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="2026.1.0",
+    description=(
+        "Manages draft file trees on EFS. All endpoints require a Passport JWT from identity-service.\n\n"
+        "**Flow:** log in via identity-service → copy `access_token` → click **Authorize** → paste as `Bearer <token>`."
+    ),
+    openapi_tags=[
+        {"name": "Drafts", "description": "Create and manage draft file trees. Requires author or admin role."},
+        {"name": "Internal", "description": "Service-to-service endpoints. Cluster-internal only in production."},
+        {"name": "ops", "description": "Kubernetes liveness and readiness probes."},
+    ],
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},
 )
 
 app.add_middleware(

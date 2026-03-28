@@ -16,6 +16,9 @@ from app.api import deps
 
 router = APIRouter()
 
+_404 = {404: {"description": "Membership not found"}}
+_409 = {409: {"description": "User is already a member of this repository"}}
+
 
 class MembershipCreate(BaseModel):
     repo_id: uuid.UUID
@@ -27,11 +30,24 @@ class RoleUpdate(BaseModel):
     role: RepoRole
 
 
+class MembershipResponse(BaseModel):
+    id: uuid.UUID
+    repo_id: str
+    user_id: str
+    role: RepoRole
+
+
+class RoleResponse(BaseModel):
+    repo_id: str
+    user_id: str
+    role: RepoRole
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/internal/memberships
 # Assigns a role on repo creation or invite acceptance.
 # ---------------------------------------------------------------------------
-@router.post("/memberships", status_code=status.HTTP_201_CREATED)
+@router.post("/memberships", status_code=status.HTTP_201_CREATED, response_model=MembershipResponse, responses=_409)
 def create_membership(
     payload: MembershipCreate,
     db: Session = Depends(deps.get_db),
@@ -68,7 +84,7 @@ def create_membership(
 # Returns the role for a specific user/repo pair.
 # Callers cache the result for 60 seconds.
 # ---------------------------------------------------------------------------
-@router.get("/repos/{repo_id}/role")
+@router.get("/repos/{repo_id}/role", response_model=RoleResponse, responses=_404)
 def get_member_role(
     repo_id: uuid.UUID,
     user_id: str,
@@ -89,7 +105,7 @@ def get_member_role(
 # PUT /v1/internal/repos/{repo_id}/members/{user_id}/role
 # Updates Table 1. 60-second TTL provides bounded eventual consistency.
 # ---------------------------------------------------------------------------
-@router.put("/repos/{repo_id}/members/{user_id}/role", status_code=status.HTTP_200_OK)
+@router.put("/repos/{repo_id}/members/{user_id}/role", status_code=status.HTTP_200_OK, response_model=RoleResponse, responses=_404)
 def update_member_role(
     repo_id: uuid.UUID,
     user_id: str,
@@ -114,7 +130,11 @@ def update_member_role(
 # DELETE /v1/internal/repos/{repo_id}/members/{user_id}
 # Deletes the Table 1 row.
 # ---------------------------------------------------------------------------
-@router.delete("/repos/{repo_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/repos/{repo_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={**_404, 403: {"description": "Cannot remove the repository owner"}},
+)
 def delete_membership(
     repo_id: uuid.UUID,
     user_id: str,

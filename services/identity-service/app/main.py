@@ -19,7 +19,37 @@ log = structlog.get_logger()
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title=settings.PROJECT_NAME, version="2026.1.0")
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version="2026.1.0",
+    description=(
+        "Handles user registration, authentication via AWS Cognito, "
+        "and issues internal Passport JWTs consumed by downstream services.\n\n"
+        "**Flow:** `POST /v1/auth/login` → copy `access_token` → click **Authorize** → paste as `Bearer <token>`."
+    ),
+    openapi_tags=[
+        {
+            "name": "Authentication",
+            "description": (
+                "Register, confirm, and log in users. The `/login` response includes an "
+                "`access_token` (Passport JWT) — use it to authorize protected endpoints."
+            ),
+        },
+        {
+            "name": "Users",
+            "description": "User-facing operations — returns the list of accessible repositories.",
+        },
+        {
+            "name": "Internal",
+            "description": (
+                "Service-to-service endpoints for membership management and role lookups. "
+                "In production these are cluster-internal only (not exposed via ALB)."
+            ),
+        },
+        {"name": "ops", "description": "Kubernetes liveness and readiness probes."},
+    ],
+    swagger_ui_parameters={"persistAuthorization": True},
+)
 
 # CORS — restricted to configured origins; expose correlation ID header to JS
 app.add_middleware(

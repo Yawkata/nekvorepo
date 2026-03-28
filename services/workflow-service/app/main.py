@@ -40,7 +40,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="2026.1.0",
+    description=(
+        "Manages repository lifecycle. All endpoints require a Passport JWT from identity-service.\n\n"
+        "**Flow:** log in via identity-service → copy `access_token` → click **Authorize** → paste as `Bearer <token>`."
+    ),
+    openapi_tags=[
+        {"name": "repos", "description": "Create and manage repositories."},
+        {"name": "ops", "description": "Kubernetes liveness and readiness probes."},
+    ],
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},
 )
 
 # CORS — restricted to configured origins; expose correlation ID header to JS

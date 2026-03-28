@@ -25,7 +25,7 @@ class RepoSummary(BaseModel):
     created_at: datetime
 
 
-@router.get("/me/repos", response_model=List[RepoSummary])
+@router.get("/me/repos", response_model=List[RepoSummary], responses={401: {"description": "Invalid or expired token"}})
 def list_my_repos(
     db: Session = Depends(deps.get_db),
     passport: TokenData = Security(verify_passport),

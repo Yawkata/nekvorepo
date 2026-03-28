@@ -74,7 +74,16 @@ class RepoResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=RepoResponse, status_code=201)
+@router.post(
+    "",
+    response_model=RepoResponse,
+    status_code=201,
+    responses={
+        401: {"description": "Invalid or expired token"},
+        409: {"description": "You already own a repository with that name"},
+        500: {"description": "Failed to persist repository"},
+    },
+)
 def create_repo(
     body: CreateRepoRequest,
     db: Session = Depends(deps.get_db),
