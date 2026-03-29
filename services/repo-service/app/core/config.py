@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Role resolution cache TTL.  Per spec, role changes propagate within 60 seconds.
     ROLE_CACHE_TTL_SECONDS: int = 60
 
+    # S3 bucket for committed file blobs.
+    # Provisioned by terraform/s3.tf as "${project_name}-repo-blobs".
+    S3_REPO_BUCKET: str
+
     # CORS — empty list = no CORS (secure default). Set per-environment.
     CORS_ORIGINS: list[str] = []
 

@@ -47,10 +47,17 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - IDENTITY_SERVICE_URL=http://identity-service:8000
+      - REPO_SERVICE_URL=http://repo-service:8000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - S3_REPO_BUCKET=${S3_REPO_BUCKET}
     depends_on:
       database-migrations:
         condition: service_completed_successfully
       identity-service:
+        condition: service_healthy
+      repo-service:
         condition: service_healthy
     networks:
       - chrono_network
@@ -73,6 +80,10 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - IDENTITY_SERVICE_URL=http://identity-service:8000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - S3_REPO_BUCKET=${S3_REPO_BUCKET}
       # EFS_DRAFTS_ROOT defaults to /mnt/efs/drafts inside the container.
       # Local:      host directory bind-mounted below for easy inspection.
       # Production: EFS CSI driver mounts at the same path — no code change needed.

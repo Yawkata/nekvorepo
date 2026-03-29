@@ -102,6 +102,7 @@ class RepoCommit(SQLModel, table=True):
             SAEnum(CommitStatus), server_default=CommitStatus.pending, nullable=False
         )
     )
+    changes_summary: Optional[str] = Field(default=None)  # e.g. "3 files changed, 1 added, 2 modified"
     reviewer_comment: Optional[str] = Field(default=None)  # Populated on reviewer rejection
     timestamp: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

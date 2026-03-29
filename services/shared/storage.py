@@ -24,6 +24,25 @@ class StorageManager:
     def get_draft_path(self, user_id: str, repo_id: str, file_path: str = "") -> str:
         return os.path.join(self.DRAFT_BASE, user_id, repo_id, file_path)
 
+    def blob_exists(self, content_hash: str) -> bool:
+        """Return True if an object with this SHA-256 key already exists in S3."""
+        from botocore.exceptions import ClientError
+        try:
+            self.s3.head_object(Bucket=self.S3_BUCKET, Key=content_hash)
+            return True
+        except ClientError:
+            return False
+
+    def upload_blob(self, data: bytes, content_hash: str, content_type: str) -> None:
+        """Upload bytes to S3 keyed by SHA-256 hex. No-op if the key already exists."""
+        if not self.blob_exists(content_hash):
+            self.s3.put_object(
+                Bucket=self.S3_BUCKET,
+                Key=content_hash,
+                Body=data,
+                ContentType=content_type,
+            )
+
     def generate_presigned_url(self, content_hash: str, expires_in: int = 3600):
         # Used for "View Mode" to fetch directly from S3
         return self.s3.generate_presigned_url(

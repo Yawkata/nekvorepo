@@ -2,29 +2,41 @@
 Internal endpoints — reachable only within the cluster via Kubernetes NetworkPolicy.
 NOT exposed through the ALB / API Gateway.
 
-These are called by Workflow-Service during the commit flow (Phase 5).
-
-Phase 4 stubs:
-  POST /v1/internal/sync-blobs    — Phase 5: walks EFS, uploads blobs to S3, wipes EFS
-  DELETE /v1/internal/drafts/cleanup — Phase 5: SQS consumer for EFS directory cleanup
+Called by Workflow-Service during the commit flow:
+  POST /v1/internal/sync-blobs        — walk EFS, upload blobs to S3, return hash map
+  DELETE /v1/internal/drafts/{id}     — idempotent EFS directory wipe (post-approval)
 
 Phase 9:
-  POST /v1/internal/cache/invalidate — invalidates the role cache for a user/repo pair
+  POST /v1/internal/cache/invalidate  — invalidates the role cache for a user/repo pair
 """
+import hashlib
 import uuid
 
 import structlog
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import Session
 
+from shared.models.workflow import Blob
+from shared.storage import StorageManager
+from app.api import deps
 from app.services import identity_client
+from app.services.efs import EFSService
 
 log = structlog.get_logger()
 router = APIRouter()
 
+# Module-level StorageManager — one S3 client, reused across requests
+_storage = StorageManager()
+
 
 # ---------------------------------------------------------------------------
-# Phase 5 stubs
+# POST /v1/internal/sync-blobs
+# Called by Workflow-Service after setting draft.status = committing.
+# Walks EFS, uploads new blobs to S3, registers them in the blobs table.
+# Does NOT wipe the EFS directory — caller sends a separate DELETE after the
+# commit row is safely written to the database.
 # ---------------------------------------------------------------------------
 
 class SyncBlobsRequest(BaseModel):
@@ -33,53 +45,92 @@ class SyncBlobsRequest(BaseModel):
     user_id: str
 
 
+class SyncBlobsResponse(BaseModel):
+    blobs: dict[str, str]  # { "relative/path": "sha256hex" }
+
+
 @router.post(
     "/sync-blobs",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    summary="[Phase 5] Walk EFS, upload blobs to S3, wipe EFS",
-    include_in_schema=True,
+    response_model=SyncBlobsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Walk EFS, upload blobs to S3, return content hash map",
 )
-def sync_blobs(body: SyncBlobsRequest):
+def sync_blobs(
+    body: SyncBlobsRequest,
+    db: Session = Depends(deps.get_db),
+    efs: EFSService = Depends(deps.get_efs),
+):
     """
-    Phase 5 implementation will:
-      1. Verify draft status == committing (409 otherwise).
-      2. Walk EFS at /mnt/efs/drafts/{user_id}/{repo_id}/{draft_id}/.
-      3. Compute SHA-256 per real file, skipping .deleted markers.
-      4. For each hash not already in the blobs table, upload the blob to S3.
-      5. Insert missing rows into blobs and repo_tree_entries.
-      6. Wipe the EFS directory after a successful transfer.
-      7. Return the content_hashes map so Workflow-Service can build the commit tree.
+    1. Walk the EFS draft directory, skipping .deleted markers.
+    2. SHA-256 each real file.
+    3. Upload to S3 (idempotent — skips existing keys).
+    4. Upsert a Blob row (INSERT ... ON CONFLICT DO NOTHING).
+    5. Return the { path: sha256hex } map for Workflow-Service to build the tree.
+
+    The EFS directory is NOT wiped here. Workflow-Service sends
+    DELETE /v1/internal/drafts/{draft_id} after the commit row is committed.
     """
-    raise HTTPException(
-        status_code=501,
-        detail="sync-blobs is implemented in Phase 5.",
+    files = efs.list_files(body.user_id, str(body.repo_id), str(body.draft_id))
+
+    blob_map: dict[str, str] = {}
+
+    for file in files:
+        raw = efs.read_file(body.user_id, str(body.repo_id), str(body.draft_id), file.path)
+        content_hash = hashlib.sha256(raw).hexdigest()
+
+        # Upload to S3 — no-op if key already exists
+        content_type = "application/octet-stream" if file.is_binary else "text/plain"
+        _storage.upload_blob(raw, content_hash, content_type)
+
+        # Upsert blob row — ON CONFLICT DO NOTHING (hash is unique key)
+        stmt = (
+            pg_insert(Blob)
+            .values(
+                blob_hash=content_hash,
+                size=file.size,
+                content_type=content_type,
+                s3_key=content_hash,
+            )
+            .on_conflict_do_nothing(index_elements=["blob_hash"])
+        )
+        db.exec(stmt)  # type: ignore[arg-type]
+
+        blob_map[file.path] = content_hash
+
+    db.commit()
+
+    log.info(
+        "sync_blobs_complete",
+        draft_id=str(body.draft_id),
+        repo_id=str(body.repo_id),
+        file_count=len(blob_map),
     )
+    return SyncBlobsResponse(blobs=blob_map)
 
 
-class CleanupRequest(BaseModel):
-    user_id: str
-    repo_id: uuid.UUID
-    draft_id: uuid.UUID
-
+# ---------------------------------------------------------------------------
+# DELETE /v1/internal/drafts/{draft_id}
+# Idempotent EFS wipe called by Workflow-Service after the commit row is
+# committed.  Missing directory → 204 (already cleaned up).
+# ---------------------------------------------------------------------------
 
 @router.delete(
-    "/drafts/cleanup",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    summary="[Phase 5] Idempotent EFS directory cleanup (SQS consumer)",
-    include_in_schema=True,
+    "/drafts/{draft_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Idempotent EFS directory wipe (post-approval cleanup)",
 )
-def cleanup_draft(body: CleanupRequest):
+def wipe_draft(
+    draft_id: uuid.UUID,
+    user_id: str,
+    repo_id: uuid.UUID,
+    efs: EFSService = Depends(deps.get_efs),
+):
     """
-    Phase 5 implementation will:
-      - Be driven by a KEDA-scaled SQS consumer running on Spot instances.
-      - Delete /mnt/efs/drafts/{user_id}/{repo_id}/{draft_id}/ idempotently
-        (missing directory → 204, not an error).
-      - Handle the case where the directory is partially written (pod crash).
+    Remove the EFS directory for a draft after its commit has been approved.
+    Idempotent — a missing directory is treated as success.
     """
-    raise HTTPException(
-        status_code=501,
-        detail="EFS cleanup via SQS is implemented in Phase 5.",
-    )
+    efs.delete_dir(user_id, str(repo_id), str(draft_id))
+    log.info("draft_efs_wiped", draft_id=str(draft_id), repo_id=str(repo_id), user_id=user_id)
 
 
 # ---------------------------------------------------------------------------

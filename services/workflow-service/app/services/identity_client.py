@@ -8,6 +8,8 @@ before setup() raises RuntimeError immediately.
 Retry policy: Per spec, all inter-service calls use tenacity with 3 attempts,
 exponential backoff, and a 503 response on exhaustion.
 """
+import time
+import threading
 import uuid
 import structlog
 import httpx
@@ -24,6 +26,36 @@ from shared.constants import RepoRole
 log = structlog.get_logger()
 
 _client: httpx.Client | None = None
+
+# ---------------------------------------------------------------------------
+# Role cache — (repo_id_str, user_id) → (role_or_None, expiry_monotonic)
+# ---------------------------------------------------------------------------
+
+_cache: dict[tuple[str, str], tuple[str | None, float]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(repo_id: str, user_id: str) -> tuple[bool, str | None]:
+    key = (repo_id, user_id)
+    with _cache_lock:
+        entry = _cache.get(key)
+    if entry is None:
+        return False, None
+    role, expiry = entry
+    if time.monotonic() > expiry:
+        return False, None
+    return True, role
+
+
+def _cache_put(repo_id: str, user_id: str, role: str | None, ttl: int) -> None:
+    with _cache_lock:
+        _cache[(repo_id, user_id)] = (role, time.monotonic() + ttl)
+
+
+def invalidate(repo_id: str, user_id: str) -> None:
+    """Evict a single cache entry."""
+    with _cache_lock:
+        _cache.pop((repo_id, user_id), None)
 
 # ---------------------------------------------------------------------------
 # Lifecycle management (called from app lifespan)
@@ -132,3 +164,40 @@ def delete_membership(repo_id: uuid.UUID, user_id: str) -> None:
             user_id=user_id,
             error=str(exc),
         )
+
+
+def get_role(repo_id: uuid.UUID, user_id: str, ttl: int = 60) -> str | None:
+    """
+    Return the caller's RepoRole string for the given repo, or None if not a member.
+    Results are cached for `ttl` seconds (default 60, per spec).
+    """
+    rid = str(repo_id)
+    hit, cached = _cache_get(rid, user_id)
+    if hit:
+        return cached
+
+    @_retry
+    def _call() -> str | None:
+        resp = _get().get(
+            f"/v1/internal/repos/{repo_id}/role",
+            params={"user_id": user_id},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()["role"]
+
+    try:
+        role = _call()
+    except RetryError:
+        log.warning("identity_client_unreachable", repo_id=rid, user_id=user_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Identity service is temporarily unavailable. Please try again.",
+        )
+    except httpx.HTTPStatusError as exc:
+        log.error("identity_client_error", repo_id=rid, status=exc.response.status_code)
+        raise HTTPException(status_code=502, detail="Failed to resolve membership.")
+
+    _cache_put(rid, user_id, role, ttl)
+    return role

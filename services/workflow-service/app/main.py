@@ -12,7 +12,7 @@ from shared.logging import configure_logging
 from shared.security.cognito import JWKS_URL
 from app.api.v1.api import api_router
 from app.core.config import settings
-from app.services import identity_client
+from app.services import identity_client, repo_client
 
 configure_logging("workflow-service")
 log = structlog.get_logger()
@@ -24,12 +24,18 @@ log = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: initialize the identity-service HTTP client
+    # Startup: initialize internal service HTTP clients
     identity_client.setup(settings.IDENTITY_SERVICE_URL)
-    log.info("workflow_service_started", identity_url=settings.IDENTITY_SERVICE_URL)
+    repo_client.setup(settings.REPO_SERVICE_URL)
+    log.info(
+        "workflow_service_started",
+        identity_url=settings.IDENTITY_SERVICE_URL,
+        repo_url=settings.REPO_SERVICE_URL,
+    )
     yield
-    # Shutdown: close the HTTP client cleanly
+    # Shutdown: close HTTP clients cleanly
     identity_client.teardown()
+    repo_client.teardown()
     log.info("workflow_service_stopped")
 
 
