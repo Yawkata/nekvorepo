@@ -31,7 +31,7 @@ class RoleUpdate(BaseModel):
 
 
 class MembershipResponse(BaseModel):
-    id: uuid.UUID
+    id: int
     repo_id: str
     user_id: str
     role: RepoRole
