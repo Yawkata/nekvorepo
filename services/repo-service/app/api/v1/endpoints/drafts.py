@@ -724,6 +724,8 @@ def reconstruct_draft(
     background_tasks.add_task(
         _reconstruct_task,
         draft_id=draft.id,
+        repo_id=repo_id,
+        user_id=passport.user_id,
         base_commit_hash=draft.base_commit_hash,
     )
 
@@ -740,37 +742,105 @@ def reconstruct_draft(
     )
 
 
-def _reconstruct_task(draft_id: uuid.UUID, base_commit_hash: str | None) -> None:
+def _reconstruct_task(
+    draft_id: uuid.UUID,
+    repo_id: uuid.UUID,
+    user_id: str,
+    base_commit_hash: str | None,
+) -> None:
     """
-    Background task: restore draft status after reconstruction.
+    Background task: restore the draft's EFS file tree from the S3 commit snapshot.
 
-    Phase 4:
-      - If base_commit_hash is None (empty repo), there is nothing to fetch from
-        S3 — transition directly to editing.
-      - If base_commit_hash is set, Phase 5 will wire in the actual blob-fetch
-        logic here.  For now, transition to editing so the author is not stuck.
+    Steps:
+      1. If base_commit_hash is None (new repo with no commits) → set editing, done.
+      2. Load RepoCommit → load all RepoTreeEntry rows for that tree.
+      3. For each entry: download blob bytes from S3 → write to EFS.
+      4. Set status = needs_rebase if a newer commit exists, else editing.
 
-    Phase 5 will:
-      1. Walk repo_tree_roots / repo_tree_entries for base_commit_hash.
-      2. Download each blob from S3 (content_hash is the S3 key).
-      3. Write each file to the draft's EFS directory.
-      4. Set status = editing (or needs_rebase if a newer commit exists).
+    On any exception: determine fallback status from the commit's status
+    (rejected / sibling_rejected / approved) and reset to that so the UI
+    shows "Try Again" rather than leaving the draft stuck in reconstructing.
     """
     from shared.database import engine
-    from sqlmodel import Session as DBSession
+    from shared.models.workflow import RepoCommit, RepoHead, RepoTreeEntry
+    from shared.storage import StorageManager
+    from shared.constants import CommitStatus
+    from sqlmodel import Session as DBSession, select as db_select
+
+    storage = StorageManager()
+    efs = EFSService()
 
     with DBSession(engine) as db:
         draft = db.get(Draft, draft_id)
         if draft is None or draft.status != DraftStatus.reconstructing:
             return  # already handled or stale task
 
-        # Phase 4: no S3 available yet — set editing immediately
-        draft.status = DraftStatus.editing
-        db.add(draft)
-        db.commit()
-        log.info(
-            "reconstruct_complete",
-            draft_id=str(draft_id),
-            base_commit_hash=base_commit_hash,
-            note="S3 blob restoration wired in Phase 5",
-        )
+        # ── Step 1: empty repo ────────────────────────────────────────────────
+        if base_commit_hash is None:
+            draft.status = DraftStatus.editing
+            db.add(draft)
+            db.commit()
+            log.info("reconstruct_complete_empty", draft_id=str(draft_id))
+            return
+
+        try:
+            # ── Step 2: load commit + tree entries ───────────────────────────
+            commit = db.exec(
+                db_select(RepoCommit).where(RepoCommit.commit_hash == base_commit_hash)
+            ).first()
+            if commit is None:
+                raise ValueError(f"Commit {base_commit_hash} not found")
+
+            entries = db.exec(
+                db_select(RepoTreeEntry).where(RepoTreeEntry.tree_id == commit.tree_id)
+            ).all()
+
+            # ── Step 3: download each blob and write to EFS ──────────────────
+            for entry in entries:
+                data = storage.download_blob(entry.content_hash)
+                efs.write_file(user_id, str(repo_id), str(draft_id), entry.name, data)
+
+            # ── Step 4: determine final status ───────────────────────────────
+            repo = db.get(RepoHead, repo_id)
+            if repo and repo.latest_commit_hash != base_commit_hash:
+                new_status = DraftStatus.needs_rebase
+            else:
+                new_status = DraftStatus.editing
+
+            draft.status = new_status
+            db.add(draft)
+            db.commit()
+            log.info(
+                "reconstruct_complete",
+                draft_id=str(draft_id),
+                base_commit_hash=base_commit_hash,
+                file_count=len(entries),
+                final_status=new_status.value,
+            )
+
+        except Exception as exc:
+            log.error(
+                "reconstruct_failed",
+                draft_id=str(draft_id),
+                base_commit_hash=base_commit_hash,
+                error=str(exc),
+            )
+            # Determine fallback status from the commit that was submitted
+            fallback = DraftStatus.rejected
+            if draft.commit_hash:
+                linked_commit = db.exec(
+                    db_select(RepoCommit).where(
+                        RepoCommit.commit_hash == draft.commit_hash
+                    )
+                ).first()
+                if linked_commit:
+                    if linked_commit.status == CommitStatus.sibling_rejected:
+                        fallback = DraftStatus.sibling_rejected
+                    elif linked_commit.status == CommitStatus.approved:
+                        fallback = DraftStatus.approved
+                    else:
+                        fallback = DraftStatus.rejected
+
+            draft.status = fallback
+            db.add(draft)
+            db.commit()

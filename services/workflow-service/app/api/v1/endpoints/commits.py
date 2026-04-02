@@ -25,7 +25,9 @@ from shared.models.workflow import Draft, RepoCommit, RepoHead, RepoTreeEntry, R
 from shared.schemas.auth import TokenData
 
 from app.api import deps
+from app.core.config import settings
 from app.services import repo_client
+from shared.notifications import send_notification
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -296,6 +298,7 @@ def create_commit(
             draft_id=body.draft_id,
             status=CommitStatus.pending,
             changes_summary=changes_summary,
+            author_email=passport.email,
         )
         db.add(commit)
         db.flush()
@@ -537,6 +540,22 @@ def approve_commit(
         siblings_rejected=len(sibling_commit_hashes),
     )
 
+    # Post-commit notifications (best-effort — outside the transaction)
+    send_notification(
+        event="approved",
+        recipient_email=commit.author_email,
+        repo_name=repo_head.repo_name,
+        commit_hash=commit_hash,
+        from_email=settings.SES_FROM_EMAIL,
+    )
+    for sibling in sibling_commits:
+        send_notification(
+            event="sibling_rejected",
+            recipient_email=sibling.author_email,
+            repo_name=repo_head.repo_name,
+            from_email=settings.SES_FROM_EMAIL,
+        )
+
     # Post-commit: wipe EFS directory (best-effort — do not fail the request on error)
     if commit.draft_id is not None and approved_draft_user_id is not None:
         repo_client.wipe_draft(
@@ -616,6 +635,17 @@ def reject_commit(
         repo_id=str(repo_id),
         reviewer_id=passport.user_id,
         has_comment=body.comment is not None,
+    )
+
+    # Post-commit notification (best-effort — outside the transaction)
+    repo_head = db.exec(select(RepoHead).where(RepoHead.id == repo_id)).first()
+    send_notification(
+        event="reviewer_rejected",
+        recipient_email=commit.author_email,
+        repo_name=repo_head.repo_name if repo_head else str(repo_id),
+        commit_hash=commit_hash,
+        reviewer_comment=body.comment,
+        from_email=settings.SES_FROM_EMAIL,
     )
 
     return RejectResponse(commit_hash=commit_hash, status=CommitStatus.rejected)

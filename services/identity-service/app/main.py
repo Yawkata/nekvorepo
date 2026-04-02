@@ -20,9 +20,10 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title=f"{settings.PROJECT_NAME} - Identity Service",
     version="2026.1.0",
     description=(
+        "**Identity Service**"
         "Handles user registration, authentication via AWS Cognito, "
         "and issues internal Passport JWTs consumed by downstream services.\n\n"
         "**Flow:** `POST /v1/auth/login` → copy `access_token` → click **Authorize** → paste as `Bearer <token>`."

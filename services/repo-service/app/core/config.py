@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Provisioned by terraform/s3.tf as "${project_name}-repo-blobs".
     S3_REPO_BUCKET: str
 
+    # SES sender address for commit lifecycle notifications.
+    # Leave empty to disable notifications (default).
+    # Must be a SES-verified address or domain to send in production.
+    SES_FROM_EMAIL: str = ""
+
     # CORS — empty list = no CORS (secure default). Set per-environment.
     CORS_ORIGINS: list[str] = []
 

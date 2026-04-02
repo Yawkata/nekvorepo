@@ -1,3 +1,4 @@
+import threading
 import uuid
 import time
 from contextlib import asynccontextmanager
@@ -7,16 +8,83 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlmodel import text
+from sqlmodel import text, Session, select
 
+from shared.constants import CommitStatus, DraftStatus
 from shared.database import engine
 from shared.logging import configure_logging
+from shared.models.workflow import Draft, RepoCommit
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.services import identity_client
 
 configure_logging("repo-service")
 log = structlog.get_logger()
+
+_SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
+
+# Mapping from CommitStatus → DraftStatus for fallback recovery
+_COMMIT_TO_DRAFT_FALLBACK: dict[CommitStatus, DraftStatus] = {
+    CommitStatus.rejected: DraftStatus.rejected,
+    CommitStatus.sibling_rejected: DraftStatus.sibling_rejected,
+    CommitStatus.approved: DraftStatus.approved,
+}
+
+
+# ---------------------------------------------------------------------------
+# Background sweep — recover drafts stuck in 'reconstructing'
+# ---------------------------------------------------------------------------
+
+def _reconstructing_sweep() -> None:
+    """
+    Daemon thread: resets drafts stuck in 'reconstructing' status.
+
+    A draft is stuck if updated_at is older than 5 minutes and its background
+    task never completed (e.g. the pod crashed mid-download).
+
+    Fallback status is derived from the linked commit's status so that the UI
+    can show the correct "Try Again" state.
+    """
+    while True:
+        time.sleep(_SWEEP_INTERVAL_SECONDS)
+        try:
+            with Session(engine) as db:
+                stuck_drafts = db.exec(  # type: ignore[call-overload]
+                    text(
+                        "SELECT id, commit_hash FROM drafts "
+                        "WHERE status = 'reconstructing' "
+                        "  AND updated_at < now() - interval '5 minutes' "
+                        "FOR UPDATE SKIP LOCKED"
+                    )
+                ).all()
+
+                recovered = 0
+                for row in stuck_drafts:
+                    draft = db.get(Draft, row.id)
+                    if draft is None:
+                        continue
+
+                    fallback = DraftStatus.rejected
+                    if draft.commit_hash:
+                        linked_commit = db.exec(
+                            select(RepoCommit).where(
+                                RepoCommit.commit_hash == draft.commit_hash
+                            )
+                        ).first()
+                        if linked_commit:
+                            fallback = _COMMIT_TO_DRAFT_FALLBACK.get(
+                                linked_commit.status, DraftStatus.rejected
+                            )
+
+                    draft.status = fallback
+                    db.add(draft)
+                    recovered += 1
+
+                db.commit()
+                if recovered:
+                    log.info("reconstructing_sweep_recovered", count=recovered)
+        except Exception as exc:
+            log.error("reconstructing_sweep_error", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +94,13 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     identity_client.setup(settings.IDENTITY_SERVICE_URL)
+
+    # Start background sweep for stuck reconstructing drafts
+    sweep_thread = threading.Thread(
+        target=_reconstructing_sweep, daemon=True, name="reconstructing-sweep"
+    )
+    sweep_thread.start()
+
     log.info("repo_service_started", identity_url=settings.IDENTITY_SERVICE_URL)
     yield
     identity_client.teardown()
@@ -37,7 +112,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title=f"{settings.PROJECT_NAME} - Repo Service",
     version="2026.1.0",
     description=(
         "Manages draft file trees on EFS. All endpoints require a Passport JWT from identity-service.\n\n"

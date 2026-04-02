@@ -52,6 +52,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_REPO_BUCKET=${S3_REPO_BUCKET}
+      - SES_FROM_EMAIL=${SES_FROM_EMAIL}
     depends_on:
       database-migrations:
         condition: service_completed_successfully
@@ -84,6 +85,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_REPO_BUCKET=${S3_REPO_BUCKET}
+      - SES_FROM_EMAIL=${SES_FROM_EMAIL}
       # EFS_DRAFTS_ROOT defaults to /mnt/efs/drafts inside the container.
       # Local:      host directory bind-mounted below for easy inspection.
       # Production: EFS CSI driver mounts at the same path — no code change needed.

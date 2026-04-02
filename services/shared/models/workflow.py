@@ -104,6 +104,7 @@ class RepoCommit(SQLModel, table=True):
     )
     changes_summary: Optional[str] = Field(default=None)  # e.g. "3 files changed, 1 added, 2 modified"
     reviewer_comment: Optional[str] = Field(default=None)  # Populated on reviewer rejection
+    author_email: Optional[str] = Field(default=None, max_length=254)  # Author's email at submission time — used for notifications
     timestamp: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     )

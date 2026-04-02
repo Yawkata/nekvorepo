@@ -1,21 +1,64 @@
+import threading
 import uuid
 import time
-import urllib.request
 from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlmodel import text
+from sqlmodel import text, Session
 from shared.database import engine
 from shared.logging import configure_logging
-from shared.security.cognito import JWKS_URL
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.services import identity_client, repo_client
 
 configure_logging("workflow-service")
 log = structlog.get_logger()
+
+_SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
+_SWEEP_STALE_MINUTES = 5
+
+
+# ---------------------------------------------------------------------------
+# Background sweep — recover drafts stuck in 'committing'
+# ---------------------------------------------------------------------------
+
+def _committing_sweep() -> None:
+    """
+    Daemon thread: resets drafts stuck in 'committing' status.
+
+    A draft is stuck if:
+      - status = 'committing'
+      - updated_at is older than 5 minutes
+      - no repo_commits row was written for this draft (the S3 sync never completed)
+
+    Safe to run concurrently via FOR UPDATE SKIP LOCKED — only one pod
+    processes each stuck draft at a time.
+    """
+    while True:
+        time.sleep(_SWEEP_INTERVAL_SECONDS)
+        try:
+            with Session(engine) as db:
+                result = db.exec(  # type: ignore[call-overload]
+                    text(
+                        "UPDATE drafts SET status = 'editing' "
+                        "WHERE id IN ("
+                        "  SELECT d.id FROM drafts d "
+                        "  LEFT JOIN repo_commits c ON c.draft_id = d.id "
+                        "  WHERE d.status = 'committing' "
+                        "    AND d.updated_at < now() - interval '5 minutes' "
+                        "    AND c.id IS NULL "
+                        "  FOR UPDATE SKIP LOCKED"
+                        ")"
+                    )
+                )
+                recovered = result.rowcount
+                db.commit()
+                if recovered:
+                    log.info("committing_sweep_recovered", count=recovered)
+        except Exception as exc:
+            log.error("committing_sweep_error", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +70,11 @@ async def lifespan(app: FastAPI):
     # Startup: initialize internal service HTTP clients
     identity_client.setup(settings.IDENTITY_SERVICE_URL)
     repo_client.setup(settings.REPO_SERVICE_URL)
+
+    # Start background sweep for stuck committing drafts
+    sweep_thread = threading.Thread(target=_committing_sweep, daemon=True, name="committing-sweep")
+    sweep_thread.start()
+
     log.info(
         "workflow_service_started",
         identity_url=settings.IDENTITY_SERVICE_URL,
@@ -44,7 +92,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title=f"{settings.PROJECT_NAME} - Workflow Service",
     version="2026.1.0",
     description=(
         "Manages repository lifecycle. All endpoints require a Passport JWT from identity-service.\n\n"
@@ -122,15 +170,6 @@ def readiness():
         checks["rds"] = "ok"
     except Exception:
         checks["rds"] = "error"
-
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(JWKS_URL), timeout=3
-        ):
-            pass
-        checks["cognito_jwks"] = "ok"
-    except Exception:
-        checks["cognito_jwks"] = "error"
 
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     return JSONResponse(

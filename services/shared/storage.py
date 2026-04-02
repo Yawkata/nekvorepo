@@ -43,6 +43,11 @@ class StorageManager:
                 ContentType=content_type,
             )
 
+    def download_blob(self, content_hash: str) -> bytes:
+        """Download blob bytes from S3 by content hash (= S3 object key)."""
+        response = self.s3.get_object(Bucket=self.S3_BUCKET, Key=content_hash)
+        return response["Body"].read()
+
     def generate_presigned_url(self, content_hash: str, expires_in: int = 3600):
         # Used for "View Mode" to fetch directly from S3
         return self.s3.generate_presigned_url(

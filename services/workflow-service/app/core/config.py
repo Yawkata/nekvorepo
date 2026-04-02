@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # Role resolution cache TTL. Per spec, role changes propagate within 60 seconds.
     ROLE_CACHE_TTL_SECONDS: int = 60
 
+    # SES sender address for commit lifecycle notifications.
+    # Leave empty to disable notifications (default).
+    # Must be a SES-verified address or domain to send in production.
+    SES_FROM_EMAIL: str = ""
+
     # CORS — empty list = no CORS (secure default). Set per-environment.
     CORS_ORIGINS: list[str] = []
 

@@ -25,6 +25,11 @@ from shared.models.workflow import Blob, RepoCommit, RepoHead, RepoTreeEntry
 from shared.storage import StorageManager
 from app.api import deps
 
+# Module-level singleton — boto3 client creation is expensive (credential
+# resolution, connection pool init). Re-using one instance across requests
+# is the standard pattern and is thread-safe for read operations.
+_storage = StorageManager()
+
 log = structlog.get_logger()
 router = APIRouter()
 
@@ -205,8 +210,7 @@ def get_file_url(
         raise HTTPException(status_code=404, detail="Blob record not found for this file.")
 
     try:
-        storage = StorageManager()
-        url = storage.generate_presigned_url(blob.blob_hash, expires_in=_PRESIGNED_URL_TTL)
+        url = _storage.generate_presigned_url(blob.blob_hash, expires_in=_PRESIGNED_URL_TTL)
     except (BotoCoreError, ClientError) as exc:
         log.error("presigned_url_failed", blob_hash=blob.blob_hash, error=str(exc))
         raise HTTPException(
