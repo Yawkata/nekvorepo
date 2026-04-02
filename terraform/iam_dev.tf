@@ -20,7 +20,8 @@ resource "aws_iam_user_policy" "local_dev_policy" {
           "s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject",
           "cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser",
           "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminSetUserPassword",
-          "cognito-idp:AdminInitiateAuth"
+          "cognito-idp:AdminInitiateAuth",
+          "ses:SendEmail"
         ]
         Resource = "*" # DEV: Broad for testing. PROD: Will be restricted.
       }
