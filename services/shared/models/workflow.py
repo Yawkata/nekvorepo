@@ -102,7 +102,9 @@ class RepoCommit(SQLModel, table=True):
             SAEnum(CommitStatus), server_default=CommitStatus.pending, nullable=False
         )
     )
-    changes_summary: Optional[str] = Field(default=None)  # e.g. "3 files changed, 1 added, 2 modified"
+    commit_summary: str = Field(max_length=200)  # Required one-liner — shown in commit lists
+    commit_description: Optional[str] = Field(default=None, max_length=5000)  # Optional extended description
+    changes_summary: Optional[str] = Field(default=None)  # e.g. "3 files changed, 1 added, 2 modified" — auto-computed
     reviewer_comment: Optional[str] = Field(default=None)  # Populated on reviewer rejection
     author_email: Optional[str] = Field(default=None, max_length=254)  # Author's email at submission time — used for notifications
     timestamp: Optional[datetime] = Field(

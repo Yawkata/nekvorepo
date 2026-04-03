@@ -16,7 +16,7 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlmodel import Session, select
 
@@ -39,11 +39,40 @@ router = APIRouter()
 
 class SubmitCommitRequest(BaseModel):
     draft_id: uuid.UUID
+    commit_summary: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Required one-line title for this commit (shown in lists and emails).",
+    )
+    commit_description: Optional[str] = Field(
+        default=None,
+        max_length=5000,
+        description="Optional extended description / body of the commit.",
+    )
+
+    @field_validator("commit_summary")
+    @classmethod
+    def _strip_summary(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("commit_summary must not be blank.")
+        return v
+
+    @field_validator("commit_description")
+    @classmethod
+    def _strip_description(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        return v or None
 
 
 class CommitResponse(BaseModel):
     commit_hash: str
     status: CommitStatus
+    commit_summary: str
+    commit_description: Optional[str]
     changes_summary: Optional[str]
     owner_id: str
     timestamp: datetime
@@ -53,6 +82,8 @@ class CommitResponse(BaseModel):
 class CommitListItem(BaseModel):
     commit_hash: str
     status: CommitStatus
+    commit_summary: str
+    commit_description: Optional[str]
     changes_summary: Optional[str]
     owner_id: str
     timestamp: datetime
@@ -297,6 +328,8 @@ def create_commit(
             tree_id=tree_id,
             draft_id=body.draft_id,
             status=CommitStatus.pending,
+            commit_summary=body.commit_summary,
+            commit_description=body.commit_description,
             changes_summary=changes_summary,
             author_email=passport.email,
         )
@@ -332,6 +365,8 @@ def create_commit(
     return CommitResponse(
         commit_hash=commit.commit_hash,
         status=commit.status,
+        commit_summary=commit.commit_summary,
+        commit_description=commit.commit_description,
         changes_summary=commit.changes_summary,
         owner_id=commit.owner_id,
         timestamp=commit.timestamp,
@@ -377,6 +412,8 @@ def list_commits(
         CommitListItem(
             commit_hash=c.commit_hash,
             status=c.status,
+            commit_summary=c.commit_summary,
+            commit_description=c.commit_description,
             changes_summary=c.changes_summary,
             owner_id=c.owner_id,
             timestamp=c.timestamp,
