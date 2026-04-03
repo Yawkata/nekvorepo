@@ -520,10 +520,12 @@ def approve_commit(
     )
 
     # Step 8 — mark approved commit's draft as approved
+    # Capture identifiers now, before db.commit() expires the ORM objects.
+    draft_id_to_wipe: Optional[uuid.UUID] = commit.draft_id
     approved_draft_user_id: Optional[str] = None
-    if commit.draft_id is not None:
+    if draft_id_to_wipe is not None:
         approved_draft = db.exec(
-            select(Draft).where(Draft.id == commit.draft_id)
+            select(Draft).where(Draft.id == draft_id_to_wipe)
         ).first()
         if approved_draft is not None:
             approved_draft_user_id = approved_draft.user_id
@@ -557,9 +559,9 @@ def approve_commit(
         )
 
     # Post-commit: wipe EFS directory (best-effort — do not fail the request on error)
-    if commit.draft_id is not None and approved_draft_user_id is not None:
+    if draft_id_to_wipe is not None and approved_draft_user_id is not None:
         repo_client.wipe_draft(
-            draft_id=commit.draft_id,
+            draft_id=draft_id_to_wipe,
             repo_id=repo_id,
             user_id=approved_draft_user_id,
         )

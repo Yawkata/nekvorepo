@@ -69,8 +69,11 @@ _DELETABLE_STATUSES = {
     DraftStatus.rejected,
 }
 
-# Statuses that allow file writes
-_WRITABLE_STATUSES = {DraftStatus.editing, DraftStatus.needs_rebase}
+# Statuses that allow file writes.
+# rejected is included: the reviewer said "not yet" — the author should be able
+# to fix their content and resubmit without going through /reconstruct first,
+# because the EFS directory is still intact after a plain reviewer rejection.
+_WRITABLE_STATUSES = {DraftStatus.editing, DraftStatus.needs_rebase, DraftStatus.rejected}
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,16 @@ class CreateDraftRequest(BaseModel):
         default=None,
         max_length=_DRAFT_LABEL_MAX,
         description="Optional label. Defaults to 'Draft — <ISO timestamp>'.",
+    )
+    source_draft_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Optional ID of an existing draft in this repo to copy files from. "
+            "The caller must own the source draft (or be an admin). "
+            "Any source status is accepted — the current EFS snapshot is copied. "
+            "The new draft inherits the source's base_commit_hash; status is "
+            "'editing' if that matches the current repo head, 'needs_rebase' if not."
+        ),
     )
 
 
@@ -219,6 +232,21 @@ def _reject_deleted_ext(path: str) -> None:
         )
 
 
+def _auto_reopen(draft: Draft, db: Session) -> None:
+    """
+    Silently promote a rejected draft back to 'editing' on the first write
+    after a reviewer rejection.
+
+    A plain rejection leaves the EFS directory intact, so the author can start
+    editing immediately without a /reconstruct round-trip.  Transitioning the
+    status here keeps the UI truthful (the draft no longer looks "done").
+    """
+    if draft.status == DraftStatus.rejected:
+        draft.status = DraftStatus.editing
+        db.add(draft)
+        db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Draft status ordering helper for list sorting
 # ---------------------------------------------------------------------------
@@ -257,30 +285,100 @@ def _sort_key(draft: Draft) -> tuple[int, float]:
 def create_draft(
     repo_id: uuid.UUID,
     body: CreateDraftRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(deps.get_db),
     efs: EFSService = Depends(deps.get_efs),
     member: tuple = Depends(deps.require_member),
 ):
     """
-    Creates a Table 8 row and an EFS directory atomically.
+    Creates a Draft row and an EFS directory.  Two creation modes:
 
-    Saga:
-      1. Validate role and repo existence.
-      2. Insert Draft row (status=editing).
-      3. Create EFS directory at /mnt/efs/drafts/{user_id}/{repo_id}/{draft_id}/.
-         If step 3 fails: delete the Draft row and return 500.
+    A) source_draft_id supplied — copy from existing draft (any status):
+       1. Load and authorise access to the source draft.
+       2. Inherit source's base_commit_hash; status = editing if the base
+          matches the current repo head, needs_rebase if it is behind.
+       3. Insert Draft row.
+       4. Copy the source EFS directory to the new draft's directory.
+          If copy fails: delete the Draft row and return 500.
+
+    B) source_draft_id not supplied — create from latest commit:
+       1. Insert Draft row.
+          - status = editing  if the repo has no commits yet.
+          - status = reconstructing  if a base commit exists; a background
+            task will restore the S3 snapshot into EFS and then transition
+            the draft to editing (or needs_rebase if stale).
+       2. Create empty EFS directory.
+          If this fails: delete the Draft row and return 500.
     """
     passport, role = member
     _require_author_or_admin(role)
 
     repo = _get_repo_or_404(db, repo_id)
 
+    # ── Mode A: copy from an existing draft ──────────────────────────────────
+    if body.source_draft_id is not None:
+        source = _get_draft_or_404(db, repo_id, body.source_draft_id)
+        _require_draft_access(source, passport.user_id, role)
+
+        new_base = source.base_commit_hash
+        if new_base is None or new_base == repo.latest_commit_hash:
+            initial_status = DraftStatus.editing
+        else:
+            initial_status = DraftStatus.needs_rebase
+
+        draft = Draft(
+            repo_id=repo_id,
+            user_id=passport.user_id,
+            label=body.label or _default_label(),
+            base_commit_hash=new_base,
+            status=initial_status,
+        )
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+
+        try:
+            efs.copy_dir(
+                src_user_id=source.user_id,
+                src_repo_id=str(repo_id),
+                src_draft_id=str(source.id),
+                dst_user_id=passport.user_id,
+                dst_repo_id=str(repo_id),
+                dst_draft_id=str(draft.id),
+            )
+        except Exception as exc:
+            log.error(
+                "efs_copy_failed",
+                draft_id=str(draft.id),
+                source_draft_id=str(body.source_draft_id),
+                error=str(exc),
+            )
+            db.delete(draft)
+            db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to copy draft storage. Please try again.",
+            )
+
+        log.info(
+            "draft_created_from_source",
+            draft_id=str(draft.id),
+            source_draft_id=str(body.source_draft_id),
+            repo_id=str(repo_id),
+            status=initial_status.value,
+        )
+        return _draft_to_response(draft)
+
+    # ── Mode B: create from latest committed snapshot ────────────────────────
+    has_base = repo.latest_commit_hash is not None
+    initial_status = DraftStatus.reconstructing if has_base else DraftStatus.editing
+
     draft = Draft(
         repo_id=repo_id,
         user_id=passport.user_id,
         label=body.label or _default_label(),
         base_commit_hash=repo.latest_commit_hash,
-        status=DraftStatus.editing,
+        status=initial_status,
     )
     db.add(draft)
     db.commit()
@@ -297,7 +395,23 @@ def create_draft(
             detail="Failed to initialise draft storage. Please try again.",
         )
 
-    log.info("draft_created", draft_id=str(draft.id), repo_id=str(repo_id))
+    if has_base:
+        background_tasks.add_task(
+            _reconstruct_task,
+            draft_id=draft.id,
+            repo_id=repo_id,
+            user_id=passport.user_id,
+            base_commit_hash=repo.latest_commit_hash,
+        )
+        log.info(
+            "draft_created_reconstructing",
+            draft_id=str(draft.id),
+            repo_id=str(repo_id),
+            base_commit_hash=repo.latest_commit_hash,
+        )
+    else:
+        log.info("draft_created", draft_id=str(draft.id), repo_id=str(repo_id))
+
     return _draft_to_response(draft)
 
 
@@ -532,6 +646,7 @@ def save_file(
     draft = _get_draft_or_404(db, repo_id, draft_id)
     _require_draft_access(draft, passport.user_id, role)
     _require_writable(draft)
+    _auto_reopen(draft, db)
 
     encoded = body.content.encode("utf-8")
     if len(encoded) > _SAVE_BODY_MAX:
@@ -591,6 +706,7 @@ def upload_file(
     draft = _get_draft_or_404(db, repo_id, draft_id)
     _require_draft_access(draft, passport.user_id, role)
     _require_writable(draft)
+    _auto_reopen(draft, db)
 
     content = file.file.read()
     if len(content) > _UPLOAD_MAX:
@@ -651,6 +767,7 @@ def delete_file(
     draft = _get_draft_or_404(db, repo_id, draft_id)
     _require_draft_access(draft, passport.user_id, role)
     _require_writable(draft)
+    _auto_reopen(draft, db)
 
     try:
         efs.mark_deleted(passport.user_id, str(repo_id), str(draft_id), path)
@@ -766,9 +883,10 @@ def _reconstruct_task(
     from shared.storage import StorageManager
     from shared.constants import CommitStatus
     from sqlmodel import Session as DBSession, select as db_select
+    from app.core.config import settings
 
     storage = StorageManager()
-    efs = EFSService()
+    efs = EFSService(settings.EFS_DRAFTS_ROOT)
 
     with DBSession(engine) as db:
         draft = db.get(Draft, draft_id)
@@ -825,9 +943,10 @@ def _reconstruct_task(
                 base_commit_hash=base_commit_hash,
                 error=str(exc),
             )
-            # Determine fallback status from the commit that was submitted
-            fallback = DraftStatus.rejected
             if draft.commit_hash:
+                # Draft was previously submitted — restore to its linked commit's outcome
+                # so the UI shows the correct terminal state (rejected / sibling_rejected).
+                fallback = DraftStatus.rejected
                 linked_commit = db.exec(
                     db_select(RepoCommit).where(
                         RepoCommit.commit_hash == draft.commit_hash
@@ -838,9 +957,15 @@ def _reconstruct_task(
                         fallback = DraftStatus.sibling_rejected
                     elif linked_commit.status == CommitStatus.approved:
                         fallback = DraftStatus.approved
-                    else:
-                        fallback = DraftStatus.rejected
+                draft.status = fallback
+            else:
+                # Brand-new draft (never submitted) — fall back to editing/needs_rebase
+                # so the author can still work even if S3 restoration failed.
+                repo = db.get(RepoHead, repo_id)
+                if repo and repo.latest_commit_hash != base_commit_hash:
+                    draft.status = DraftStatus.needs_rebase
+                else:
+                    draft.status = DraftStatus.editing
 
-            draft.status = fallback
             db.add(draft)
             db.commit()

@@ -142,6 +142,31 @@ class EFSService:
         if path.exists():
             shutil.rmtree(path)
 
+    def copy_dir(
+        self,
+        src_user_id: str,
+        src_repo_id: str,
+        src_draft_id: str,
+        dst_user_id: str,
+        dst_repo_id: str,
+        dst_draft_id: str,
+    ) -> None:
+        """
+        Copy an entire draft directory tree into a new draft directory.
+
+        If the source directory does not exist (e.g. the EFS dir was wiped after
+        approval) an empty destination directory is created instead so the caller
+        always gets a valid, usable draft directory back.
+
+        Raises OSError if the destination already exists.
+        """
+        src = self.draft_dir(src_user_id, src_repo_id, src_draft_id)
+        dst = self.draft_dir(dst_user_id, dst_repo_id, dst_draft_id)
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            dst.mkdir(parents=True, exist_ok=False)
+
     def dir_exists(self, user_id: str, repo_id: str, draft_id: str) -> bool:
         return self.draft_dir(user_id, repo_id, draft_id).is_dir()
 

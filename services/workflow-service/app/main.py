@@ -44,11 +44,12 @@ def _committing_sweep() -> None:
                     text(
                         "UPDATE drafts SET status = 'editing' "
                         "WHERE id IN ("
-                        "  SELECT d.id FROM drafts d "
-                        "  LEFT JOIN repo_commits c ON c.draft_id = d.id "
-                        "  WHERE d.status = 'committing' "
-                        "    AND d.updated_at < now() - interval '5 minutes' "
-                        "    AND c.id IS NULL "
+                        "  SELECT id FROM drafts "
+                        "  WHERE status = 'committing' "
+                        "    AND updated_at < now() - interval '5 minutes' "
+                        "    AND NOT EXISTS ("
+                        "      SELECT 1 FROM repo_commits c WHERE c.draft_id = drafts.id"
+                        "    ) "
                         "  FOR UPDATE SKIP LOCKED"
                         ")"
                     )

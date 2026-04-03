@@ -13,7 +13,7 @@ from sqlmodel import text, Session, select
 from shared.constants import CommitStatus, DraftStatus
 from shared.database import engine
 from shared.logging import configure_logging
-from shared.models.workflow import Draft, RepoCommit
+from shared.models.workflow import Draft, RepoCommit, RepoHead
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.services import identity_client
@@ -64,8 +64,10 @@ def _reconstructing_sweep() -> None:
                     if draft is None:
                         continue
 
-                    fallback = DraftStatus.rejected
                     if draft.commit_hash:
+                        # Draft was previously submitted — restore to its linked
+                        # commit's terminal outcome (rejected/sibling_rejected/approved).
+                        fallback = DraftStatus.rejected
                         linked_commit = db.exec(
                             select(RepoCommit).where(
                                 RepoCommit.commit_hash == draft.commit_hash
@@ -75,6 +77,16 @@ def _reconstructing_sweep() -> None:
                             fallback = _COMMIT_TO_DRAFT_FALLBACK.get(
                                 linked_commit.status, DraftStatus.rejected
                             )
+                    else:
+                        # Brand-new draft that was never submitted (commit_hash is
+                        # None) — the background task crashed before it could restore
+                        # the EFS snapshot.  Restore to editing/needs_rebase so the
+                        # author can keep working.
+                        repo = db.get(RepoHead, draft.repo_id)
+                        if repo and repo.latest_commit_hash != draft.base_commit_hash:
+                            fallback = DraftStatus.needs_rebase
+                        else:
+                            fallback = DraftStatus.editing
 
                     draft.status = fallback
                     db.add(draft)

@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from pydantic import BaseModel, field_validator
 from sqlalchemy.exc import IntegrityError
 from shared.models.workflow import RepoHead
+from shared.models.identity import UserRepoLink
 from shared.security import verify_passport, TokenData
 from shared.constants import RepoRole
 from app.api import deps
@@ -66,8 +67,20 @@ class RepoResponse(BaseModel):
     repo_name: str
     description: Optional[str]
     owner_id: str
+    latest_commit_hash: Optional[str]
     version: int
     created_at: datetime
+
+
+class RepoListItem(BaseModel):
+    repo_id: uuid.UUID
+    repo_name: str
+    description: Optional[str]
+    owner_id: str
+    latest_commit_hash: Optional[str]
+    version: int
+    created_at: datetime
+    role: str  # calling user's role in this repo
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +173,101 @@ def create_repo(
         repo_name=repo.repo_name,
         description=repo.description,
         owner_id=repo.owner_id,
+        latest_commit_hash=repo.latest_commit_hash,
         version=repo.version,
         created_at=repo.created_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/repos — list all repos the caller is a member of
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "",
+    response_model=list[RepoListItem],
+    summary="List repositories the caller is a member of",
+    responses={
+        401: {"description": "Invalid or expired token"},
+    },
+)
+def list_repos(
+    db: Session = Depends(deps.get_db),
+    passport: TokenData = Security(verify_passport),
+):
+    """
+    Returns every repository in which the authenticated user holds any role,
+    sorted by creation date descending (newest first).
+
+    Implemented as two queries (no N+1):
+      1. SELECT all UserRepoLink rows for this user.
+      2. SELECT all matching RepoHead rows via IN clause.
+    """
+    links = db.exec(
+        select(UserRepoLink).where(UserRepoLink.user_id == passport.user_id)
+    ).all()
+
+    if not links:
+        return []
+
+    repo_ids = [link.repo_id for link in links]
+    role_map: dict[uuid.UUID, str] = {link.repo_id: link.role for link in links}
+
+    repos = db.exec(
+        select(RepoHead)
+        .where(RepoHead.id.in_(repo_ids))  # type: ignore[attr-defined]
+        .order_by(RepoHead.created_at.desc())  # type: ignore[union-attr]
+    ).all()
+
+    return [
+        RepoListItem(
+            repo_id=r.id,
+            repo_name=r.repo_name,
+            description=r.description,
+            owner_id=r.owner_id,
+            latest_commit_hash=r.latest_commit_hash,
+            version=r.version,
+            created_at=r.created_at,
+            role=role_map.get(r.id, ""),
+        )
+        for r in repos
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/repos/{repo_id} — fetch a single repo's details
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{repo_id}",
+    response_model=RepoListItem,
+    summary="Get repository details",
+    responses={
+        401: {"description": "Invalid or expired token"},
+        403: {"description": "Not a member of this repository"},
+        404: {"description": "Repository not found"},
+    },
+)
+def get_repo(
+    repo_id: uuid.UUID,
+    db: Session = Depends(deps.get_db),
+    membership: tuple[TokenData, str] = Depends(deps.require_member),
+):
+    """
+    Returns metadata for a single repository.  Any member role is sufficient.
+    """
+    _, role = membership
+    repo = db.get(RepoHead, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+
+    return RepoListItem(
+        repo_id=repo.id,
+        repo_name=repo.repo_name,
+        description=repo.description,
+        owner_id=repo.owner_id,
+        latest_commit_hash=repo.latest_commit_hash,
+        version=repo.version,
+        created_at=repo.created_at,
+        role=role,
     )
