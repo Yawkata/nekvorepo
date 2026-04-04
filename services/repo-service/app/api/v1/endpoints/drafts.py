@@ -13,10 +13,12 @@ All endpoints require a valid Passport JWT.  Role requirements per operation:
   DELETE /drafts/{id}           author OR admin  author must own the draft
   GET    /drafts/{id}/explorer  author OR admin  author must own the draft
   GET    /drafts/{id}/files/…   author OR admin  author must own the draft
-  POST   /drafts/{id}/save      author OR admin  author must own the draft
-  POST   /drafts/{id}/upload    author OR admin  author must own the draft
-  DELETE /drafts/{id}/files/…   author OR admin  author must own the draft
-  POST   /drafts/{id}/reconstruct author OR admin author must own the draft
+  POST   /drafts/{id}/save        author OR admin  author must own the draft
+  POST   /drafts/{id}/upload      author OR admin  author must own the draft
+  DELETE /drafts/{id}/files/…     author OR admin  author must own the draft
+  POST   /drafts/{id}/mkdir       author OR admin  author must own the draft
+  POST   /drafts/{id}/rename      author OR admin  author must own the draft
+  POST   /drafts/{id}/reconstruct author OR admin  author must own the draft
 
   Reviewer / reader roles can list repos and see commits (Phase 5) but do not
   interact with individual draft file trees in Phase 4.
@@ -147,6 +149,35 @@ class ReconstructResponse(BaseModel):
     task_id: str
     draft_id: uuid.UUID
     status: DraftStatus
+
+
+class MkdirRequest(BaseModel):
+    path: str = Field(
+        ...,
+        min_length=1,
+        max_length=_PATH_MAX,
+        description=(
+            "Folder path to create, e.g. 'src/components'. "
+            "A zero-byte .keep placeholder file is written inside the folder "
+            "so the directory is visible to the explorer and survives sync-blobs."
+        ),
+    )
+
+
+class MkdirResponse(BaseModel):
+    path: str        # The folder path that was created
+    keep_file: str   # Full path of the .keep placeholder file
+
+
+class RenameRequest(BaseModel):
+    from_path: str = Field(..., min_length=1, max_length=_PATH_MAX, description="Current file or folder path.")
+    to_path: str = Field(..., min_length=1, max_length=_PATH_MAX, description="New file or folder path.")
+
+
+class RenameResponse(BaseModel):
+    from_path: str
+    to_path: str
+    files_moved: int  # Number of individual files relocated
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +809,159 @@ def delete_file(
         raise HTTPException(status_code=500, detail="Failed to mark file as deleted.")
 
     log.info("file_marked_deleted", draft_id=str(draft_id), path=path)
+
+
+# ── POST /v1/repos/{repo_id}/drafts/{draft_id}/mkdir ────────────────────────
+
+@router.post(
+    "/{repo_id}/drafts/{draft_id}/mkdir",
+    response_model=MkdirResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an empty folder in a draft",
+)
+def mkdir(
+    repo_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    body: MkdirRequest,
+    db: Session = Depends(deps.get_db),
+    efs: EFSService = Depends(deps.get_efs),
+    member: tuple = Depends(deps.require_member),
+):
+    """
+    Creates a zero-byte `.keep` placeholder file at `{path}/.keep`.
+
+    This is the conventional way to represent an otherwise-empty directory in
+    a content-addressed store — the folder becomes visible in the explorer and
+    sync-blobs will include it as a tracked path.
+
+    The operation is idempotent: calling mkdir on an existing folder simply
+    re-writes the `.keep` file with the same empty content.
+
+    - 400 if the path ends in '.deleted' (reserved extension).
+    - 409 if the draft is in 'committing' status.
+    - 400 if the draft is not in a writable state.
+    """
+    passport, role = member
+    _require_author_or_admin(role)
+
+    folder = body.path.strip().rstrip("/")
+    _reject_deleted_ext(folder)
+
+    draft = _get_draft_or_404(db, repo_id, draft_id)
+    _require_draft_access(draft, passport.user_id, role)
+    _require_writable(draft)
+    _auto_reopen(draft, db)
+
+    keep_path = folder + "/.keep"
+    try:
+        efs.write_file(passport.user_id, str(repo_id), str(draft_id), keep_path, b"")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        log.error("efs_mkdir_failed", draft_id=str(draft_id), path=folder, error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to create folder.")
+
+    log.info("folder_created", draft_id=str(draft_id), path=folder)
+    return MkdirResponse(path=folder, keep_file=keep_path)
+
+
+# ── POST /v1/repos/{repo_id}/drafts/{draft_id}/rename ───────────────────────
+
+@router.post(
+    "/{repo_id}/drafts/{draft_id}/rename",
+    response_model=RenameResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Rename a file or folder in a draft",
+)
+def rename_path(
+    repo_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    body: RenameRequest,
+    db: Session = Depends(deps.get_db),
+    efs: EFSService = Depends(deps.get_efs),
+    member: tuple = Depends(deps.require_member),
+):
+    """
+    Renames a file or an entire folder tree within a draft.
+
+    **File rename**: the file's bytes are copied to the new path and a `.deleted`
+    marker is placed at the old path.
+
+    **Folder rename**: every visible file under `from_path/` is copied to the
+    equivalent path under `to_path/`, then `from_path` is marked deleted (which
+    covers the entire old subtree via the deletion-marker logic).
+
+    Rules:
+    - `from_path` and `to_path` must differ.
+    - `to_path` cannot be a descendant of `from_path` (would rename a folder into itself).
+    - `to_path` must not already exist in the draft (use DELETE first if you need to overwrite).
+    - Neither path may end in `.deleted`.
+    - Draft must be in a writable state (editing, needs_rebase, or rejected).
+    """
+    passport, role = member
+    _require_author_or_admin(role)
+
+    from_p = body.from_path.strip().rstrip("/")
+    to_p = body.to_path.strip().rstrip("/")
+    _reject_deleted_ext(from_p)
+    _reject_deleted_ext(to_p)
+
+    if from_p == to_p:
+        raise HTTPException(status_code=400, detail="Source and destination paths are identical.")
+    if to_p.startswith(from_p + "/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot rename a folder into one of its own subdirectories.",
+        )
+
+    draft = _get_draft_or_404(db, repo_id, draft_id)
+    _require_draft_access(draft, passport.user_id, role)
+    _require_writable(draft)
+    _auto_reopen(draft, db)
+
+    files = efs.list_files(passport.user_id, str(repo_id), str(draft_id))
+    file_paths = {f.path for f in files}
+
+    from_is_file = from_p in file_paths
+    from_is_dir = any(p.startswith(from_p + "/") for p in file_paths)
+
+    if not from_is_file and not from_is_dir:
+        raise HTTPException(status_code=404, detail=f"No file or folder found at '{from_p}'.")
+
+    # Guard against silently clobbering an existing destination
+    to_exists = to_p in file_paths or any(p.startswith(to_p + "/") for p in file_paths)
+    if to_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A file or folder already exists at '{to_p}'. Delete it first or choose a different destination.",
+        )
+
+    files_moved = 0
+    try:
+        if from_is_file:
+            content = efs.read_file(passport.user_id, str(repo_id), str(draft_id), from_p)
+            efs.write_file(passport.user_id, str(repo_id), str(draft_id), to_p, content)
+            efs.mark_deleted(passport.user_id, str(repo_id), str(draft_id), from_p)
+            files_moved = 1
+        else:
+            prefix = from_p + "/"
+            for f in files:
+                if f.path.startswith(prefix):
+                    relative = f.path[len(prefix):]
+                    new_file_path = to_p + "/" + relative
+                    content = efs.read_file(passport.user_id, str(repo_id), str(draft_id), f.path)
+                    efs.write_file(passport.user_id, str(repo_id), str(draft_id), new_file_path, content)
+                    files_moved += 1
+            # Mark the old folder as deleted — covers the entire old subtree
+            efs.mark_deleted(passport.user_id, str(repo_id), str(draft_id), from_p)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        log.error("efs_rename_failed", draft_id=str(draft_id), from_path=from_p, to_path=to_p, error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to rename path in storage.")
+
+    log.info("path_renamed", draft_id=str(draft_id), from_path=from_p, to_path=to_p, files_moved=files_moved)
+    return RenameResponse(from_path=from_p, to_path=to_p, files_moved=files_moved)
 
 
 # ── POST /v1/repos/{repo_id}/drafts/{draft_id}/reconstruct ──────────────────

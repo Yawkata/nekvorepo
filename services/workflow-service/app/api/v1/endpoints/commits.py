@@ -5,6 +5,7 @@ All endpoints require membership in the target repository (via require_member).
 
 POST   /v1/repos/{repo_id}/commits                         — submit draft for review
 GET    /v1/repos/{repo_id}/commits                         — list pending commits (reviewers)
+GET    /v1/repos/{repo_id}/commits/history                 — full history: approved/rejected/sibling_rejected (any member)
 POST   /v1/repos/{repo_id}/commits/{commit_hash}/approve   — 8-step approval transaction
 POST   /v1/repos/{repo_id}/commits/{commit_hash}/reject    — reviewer rejection
 """
@@ -113,6 +114,19 @@ class RejectRequest(BaseModel):
 class RejectResponse(BaseModel):
     commit_hash: str
     status: CommitStatus
+
+
+class CommitHistoryItem(BaseModel):
+    commit_hash: str
+    status: CommitStatus
+    commit_summary: str
+    commit_description: Optional[str]
+    changes_summary: Optional[str]
+    owner_id: str
+    timestamp: datetime
+    parent_commit_hash: Optional[str]
+    reviewer_comment: Optional[str]
+    draft_id: Optional[uuid.UUID]
 
 
 # ---------------------------------------------------------------------------
@@ -310,10 +324,22 @@ def create_commit(
         db.commit()
         raise HTTPException(status_code=422, detail="Draft has no files to commit.")
 
+    # Compute diff early — reject if nothing actually changed vs the parent commit.
+    # This check runs before building the tree so we don't write any DB rows.
+    changes_summary = _compute_changes_summary(blob_map, parent_commit_hash, db)
+    if changes_summary == "No changes":
+        draft.status = DraftStatus.editing
+        db.add(draft)
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail="Draft has no changes relative to the parent commit. Add, modify, or delete at least one file before submitting.",
+        )
+
     # Steps 4-7 — build tree, write commit row, update draft; compensate on failure
     try:
         tree_id, tree_hash = _build_tree(blob_map, db)
-        changes_summary = _compute_changes_summary(blob_map, parent_commit_hash, db)
+        # changes_summary was computed above; reuse it here
 
         now = datetime.now(timezone.utc)
         commit_hash = hashlib.sha256(
@@ -417,6 +443,60 @@ def list_commits(
             changes_summary=c.changes_summary,
             owner_id=c.owner_id,
             timestamp=c.timestamp,
+            draft_id=c.draft_id,
+        )
+        for c in commits
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/repos/{repo_id}/commits/history — Full commit history
+# NOTE: This route must be registered BEFORE /{commit_hash}/approve and
+# /{commit_hash}/reject so that "history" is matched as a literal segment,
+# not as a commit_hash path parameter.
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/history",
+    response_model=list[CommitHistoryItem],
+    summary="Full commit history (approved / rejected / sibling_rejected)",
+    responses={
+        403: {"description": "Not a member"},
+    },
+)
+def list_commit_history(
+    repo_id: uuid.UUID,
+    db: Session = Depends(deps.get_db),
+    membership: tuple[TokenData, str] = Depends(deps.require_member),
+):
+    """
+    Returns all resolved commits for the repository in reverse-chronological order.
+
+    Includes approved, rejected, and sibling_rejected commits — but NOT pending
+    ones (those belong to the reviewer queue at GET /commits).
+
+    Any repo member can call this endpoint (author, reviewer, admin, reader).
+    """
+    commits = db.exec(
+        select(RepoCommit)
+        .where(
+            RepoCommit.repo_id == repo_id,
+            RepoCommit.status != CommitStatus.pending,
+        )
+        .order_by(RepoCommit.timestamp.desc())  # type: ignore[union-attr]
+    ).all()
+
+    return [
+        CommitHistoryItem(
+            commit_hash=c.commit_hash,
+            status=c.status,
+            commit_summary=c.commit_summary,
+            commit_description=c.commit_description,
+            changes_summary=c.changes_summary,
+            owner_id=c.owner_id,
+            timestamp=c.timestamp,
+            parent_commit_hash=c.parent_commit_hash,
+            reviewer_comment=c.reviewer_comment,
             draft_id=c.draft_id,
         )
         for c in commits
