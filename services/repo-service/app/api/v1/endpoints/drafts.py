@@ -112,7 +112,6 @@ class DraftResponse(BaseModel):
     status: DraftStatus
     base_commit_hash: str | None
     commit_hash: str | None
-    changes_summary: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -193,7 +192,6 @@ def _draft_to_response(draft: Draft) -> DraftResponse:
         status=draft.status,
         base_commit_hash=draft.base_commit_hash,
         commit_hash=draft.commit_hash,
-        changes_summary=draft.changes_summary,
         created_at=draft.created_at,
         updated_at=draft.updated_at,
     )
@@ -1063,9 +1061,10 @@ def _reconstruct_task(
     shows "Try Again" rather than leaving the draft stuck in reconstructing.
     """
     from shared.database import engine
-    from shared.models.workflow import RepoCommit, RepoHead, RepoTreeEntry
+    from shared.models.workflow import RepoCommit, RepoHead
     from shared.storage import StorageManager
     from shared.constants import CommitStatus
+    from shared.tree_utils import collect_blobs
     from sqlmodel import Session as DBSession, select as db_select
     from app.core.config import settings
 
@@ -1093,14 +1092,11 @@ def _reconstruct_task(
             if commit is None:
                 raise ValueError(f"Commit {base_commit_hash} not found")
 
-            entries = db.exec(
-                db_select(RepoTreeEntry).where(RepoTreeEntry.tree_id == commit.tree_id)
-            ).all()
-
-            # ── Step 3: download each blob and write to EFS ──────────────────
-            for entry in entries:
-                data = storage.download_blob(entry.content_hash)
-                efs.write_file(user_id, str(repo_id), str(draft_id), entry.name, data)
+            # ── Step 3: collect full blob map (recursive) and restore to EFS ─
+            blob_map = collect_blobs(commit.tree_id, db)
+            for path, blob_hash in blob_map.items():
+                data = storage.download_blob(blob_hash)
+                efs.write_file(user_id, str(repo_id), str(draft_id), path, data)
 
             # ── Step 4: determine final status ───────────────────────────────
             repo = db.get(RepoHead, repo_id)
@@ -1116,7 +1112,7 @@ def _reconstruct_task(
                 "reconstruct_complete",
                 draft_id=str(draft_id),
                 base_commit_hash=base_commit_hash,
-                file_count=len(entries),
+                file_count=len(blob_map),
                 final_status=new_status.value,
             )
 

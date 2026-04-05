@@ -46,8 +46,6 @@ class RepoTreeEntry(SQLModel, table=True):
     type: NodeType = Field(sa_column=Column(SAEnum(NodeType), nullable=False))
     name: str = Field(max_length=255)
     content_hash: str = Field(max_length=64)  # Points to blobs.blob_hash or another tree_hash
-    content_type: str = Field(default="text/plain")
-    size: int = Field(default=0)
 
 
 class Blob(SQLModel, table=True):
@@ -62,10 +60,9 @@ class Blob(SQLModel, table=True):
             server_default=text("gen_random_uuid()"),
         ),
     )
-    blob_hash: str = Field(unique=True, index=True, max_length=64)  # SHA-256 hex
+    blob_hash: str = Field(unique=True, index=True, max_length=64)  # SHA-256 hex; also used as the S3 object key
     size: int = Field(default=0, nullable=False)
     content_type: str = Field(default="text/plain", nullable=False)
-    s3_key: str = Field(nullable=False)  # S3 object key (= blob_hash per spec)
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     )
@@ -93,7 +90,7 @@ class RepoCommit(SQLModel, table=True):
         default=None,
         sa_column=Column(
             PGUUID(as_uuid=True),
-            ForeignKey("drafts.id"),
+            ForeignKey("drafts.id", ondelete="SET NULL"),
             nullable=True,
         ),
     )
@@ -137,7 +134,6 @@ class Draft(SQLModel, table=True):
     label: Optional[str] = Field(default=None, max_length=100)  # User-defined draft label
     base_commit_hash: Optional[str] = Field(default=None, max_length=64)
     commit_hash: Optional[str] = Field(default=None, max_length=64)  # FK to repo_commits after submit
-    changes_summary: Optional[str] = Field(default=None)  # e.g. "3 files changed, 1 added, 2 modified"
     status: DraftStatus = Field(
         sa_column=Column(
             SAEnum(DraftStatus), server_default=DraftStatus.editing, nullable=False

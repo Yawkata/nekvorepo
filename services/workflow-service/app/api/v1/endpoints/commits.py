@@ -23,6 +23,7 @@ from sqlmodel import Session, select
 
 from shared.constants import CommitStatus, DraftStatus, NodeType, RepoRole
 from shared.models.workflow import Draft, RepoCommit, RepoHead, RepoTreeEntry, RepoTreeRoot
+from shared.tree_utils import collect_blobs
 from shared.schemas.auth import TokenData
 
 from app.api import deps
@@ -135,58 +136,76 @@ class CommitHistoryItem(BaseModel):
 
 def _build_tree(blob_map: dict[str, str], db: Session) -> tuple[int, str]:
     """
-    Given { "relative/path": "sha256hex" }, build the RepoTreeRoot +
-    RepoTreeEntry rows and return (tree_id, tree_hash).
+    Build a proper hierarchical commit tree from a flat {path: blob_hash} map.
 
-    Flat-tree strategy: all blobs hang off a single root tree node.
-    Recursive directory trees are deferred to Phase 6+.
+    Files in subdirectories produce intermediate RepoTreeRoot + RepoTreeEntry
+    rows for each directory level.  A tree entry of NodeType.tree points to a
+    sub-RepoTreeRoot via content_hash = sub-tree's tree_hash.  Identical
+    subtrees are deduplicated automatically (INSERT … ON CONFLICT DO NOTHING).
+
+    Returns (root_tree_id, root_tree_hash).
     """
-    entries = sorted(
-        [
-            {"type": "blob", "name": path, "content_hash": content_hash}
-            for path, content_hash in blob_map.items()
-        ],
-        key=lambda e: e["name"],
-    )
 
-    tree_hash = hashlib.sha256(
-        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    def _parse(paths: dict[str, str]) -> dict:
+        """Convert {"a/b/c.txt": hash, ...} into a nested {name: ...} dict.
+        Leaf values are str (blob hash); directory values are nested dicts.
+        """
+        tree: dict = {}
+        for full_path, blob_hash in paths.items():
+            parts = full_path.split("/")
+            node = tree
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = blob_hash
+        return tree
 
-    # Upsert tree root — idempotent
-    db.exec(  # type: ignore[arg-type]
-        text(
-            "INSERT INTO repo_tree_roots (tree_hash) VALUES (:h) ON CONFLICT DO NOTHING"
-        ).bindparams(h=tree_hash)
-    )
-    db.flush()
+    def _insert(node: dict) -> tuple[int, str]:
+        """Recursively insert one tree level. Returns (tree_id, tree_hash)."""
+        entry_list = []
+        for name in sorted(node.keys()):
+            value = node[name]
+            if isinstance(value, str):
+                # Leaf: blob
+                entry_list.append({"type": "blob", "name": name, "content_hash": value})
+            else:
+                # Directory: build subtree first, then reference it by hash
+                _, sub_hash = _insert(value)
+                entry_list.append({"type": "tree", "name": name, "content_hash": sub_hash})
 
-    root = db.exec(
-        select(RepoTreeRoot).where(RepoTreeRoot.tree_hash == tree_hash)
-    ).one()
+        tree_hash = hashlib.sha256(
+            json.dumps(entry_list, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
-    # Insert tree entries only if this tree root is new
-    existing_count = db.exec(  # type: ignore[arg-type]
-        text(
-            "SELECT COUNT(*) FROM repo_tree_entries WHERE tree_id = :tid"
-        ).bindparams(tid=root.id)
-    ).scalar()
-
-    if existing_count == 0:
-        for entry in entries:
-            db.add(
-                RepoTreeEntry(
-                    tree_id=root.id,
-                    type=NodeType.blob,
-                    name=entry["name"],
-                    content_hash=entry["content_hash"],
-                    content_type="text/plain",
-                    size=0,
-                )
-            )
+        # Upsert tree root — idempotent across concurrent submissions
+        db.exec(  # type: ignore[arg-type]
+            text("INSERT INTO repo_tree_roots (tree_hash) VALUES (:h) ON CONFLICT DO NOTHING")
+            .bindparams(h=tree_hash)
+        )
         db.flush()
 
-    return root.id, tree_hash
+        root = db.exec(
+            select(RepoTreeRoot).where(RepoTreeRoot.tree_hash == tree_hash)
+        ).one()
+
+        # Insert entries only if this tree root is brand-new
+        existing = db.exec(  # type: ignore[arg-type]
+            text("SELECT COUNT(*) FROM repo_tree_entries WHERE tree_id = :tid")
+            .bindparams(tid=root.id)
+        ).scalar()
+
+        if not existing:
+            for entry in entry_list:
+                db.add(RepoTreeEntry(
+                    tree_id=root.id,
+                    type=NodeType.blob if entry["type"] == "blob" else NodeType.tree,
+                    name=entry["name"],
+                    content_hash=entry["content_hash"],
+                ))
+            db.flush()
+
+        return root.id, tree_hash
+
+    return _insert(_parse(blob_map))
 
 
 def _compute_changes_summary(
@@ -209,11 +228,7 @@ def _compute_changes_summary(
         count = len(new_blobs)
         return f"{count} {'file' if count == 1 else 'files'} added"
 
-    parent_entries = db.exec(
-        select(RepoTreeEntry).where(RepoTreeEntry.tree_id == parent_commit.tree_id)
-    ).all()
-
-    old_map = {e.name: e.content_hash for e in parent_entries}
+    old_map = collect_blobs(parent_commit.tree_id, db)
 
     added = [k for k in new_blobs if k not in old_map]
     deleted = [k for k in old_map if k not in new_blobs]
@@ -364,7 +379,6 @@ def create_commit(
 
         draft.status = DraftStatus.pending
         draft.commit_hash = commit_hash
-        draft.changes_summary = changes_summary
         db.add(draft)
         db.commit()
         db.refresh(commit)

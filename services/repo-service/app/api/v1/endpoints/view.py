@@ -21,8 +21,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from shared.models.workflow import Blob, RepoCommit, RepoHead, RepoTreeEntry
+from shared.models.workflow import Blob, RepoCommit, RepoHead
 from shared.storage import StorageManager
+from shared.tree_utils import collect_blobs
 from app.api import deps
 
 # Module-level singleton — boto3 client creation is expensive (credential
@@ -126,30 +127,24 @@ def get_view(
     if commit is None:
         return ViewResponse(repo_id=repo_id, commit_hash=None, files=[])
 
-    entries = db.exec(
-        select(RepoTreeEntry).where(RepoTreeEntry.tree_id == commit.tree_id)
-    ).all()
+    # Recursively collect all blob entries from the commit tree
+    blob_map = collect_blobs(commit.tree_id, db)
 
-    # Bulk-load blobs to get accurate size / content_type
-    content_hashes = [e.content_hash for e in entries]
+    # Bulk-load blob metadata to get accurate size / content_type
     blobs: dict[str, Blob] = {}
-    if content_hashes:
+    if blob_map:
         blob_rows = db.exec(
-            select(Blob).where(Blob.blob_hash.in_(content_hashes))  # type: ignore[attr-defined]
+            select(Blob).where(Blob.blob_hash.in_(list(blob_map.values())))  # type: ignore[attr-defined]
         ).all()
         blobs = {b.blob_hash: b for b in blob_rows}
 
     files = [
         ViewFileItem(
-            path=entry.name,
-            content_type=blobs[entry.content_hash].content_type
-            if entry.content_hash in blobs
-            else entry.content_type,
-            size=blobs[entry.content_hash].size
-            if entry.content_hash in blobs
-            else entry.size,
+            path=path,
+            content_type=blobs[blob_hash].content_type if blob_hash in blobs else "text/plain",
+            size=blobs[blob_hash].size if blob_hash in blobs else 0,
         )
-        for entry in sorted(entries, key=lambda e: e.name)
+        for path, blob_hash in sorted(blob_map.items())
     ]
 
     log.info(
@@ -194,17 +189,14 @@ def get_file_url(
     if commit is None:
         raise HTTPException(status_code=404, detail="Repository has no commits yet.")
 
-    entry = db.exec(
-        select(RepoTreeEntry).where(
-            RepoTreeEntry.tree_id == commit.tree_id,
-            RepoTreeEntry.name == path,
-        )
-    ).first()
-    if entry is None:
+    # Recursively collect the full blob map and look up the requested path
+    blob_map = collect_blobs(commit.tree_id, db)
+    blob_hash = blob_map.get(path)
+    if blob_hash is None:
         raise HTTPException(status_code=404, detail=f"File '{path}' not found in commit {commit_hash}.")
 
     blob = db.exec(
-        select(Blob).where(Blob.blob_hash == entry.content_hash)
+        select(Blob).where(Blob.blob_hash == blob_hash)
     ).first()
     if blob is None:
         raise HTTPException(status_code=404, detail="Blob record not found for this file.")

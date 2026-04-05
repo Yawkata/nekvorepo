@@ -89,7 +89,6 @@ def sync_blobs(
                 blob_hash=content_hash,
                 size=file.size,
                 content_type=content_type,
-                s3_key=content_hash,
             )
             .on_conflict_do_nothing(index_elements=["blob_hash"])
         )
