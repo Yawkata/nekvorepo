@@ -64,7 +64,6 @@ def verify_passport(
         return TokenData(
             user_id=payload["sub"],
             email=payload.get("email"),
-            repo_count=payload.get("repo_count", 0),
         )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Passport has expired.")

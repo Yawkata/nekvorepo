@@ -1,8 +1,6 @@
 from fastapi import APIRouter, Depends, Security, status
-from sqlmodel import Session, func, select
 from pydantic import BaseModel, EmailStr
 from shared.schemas.auth import Token, TokenData
-from shared.models.identity import UserRepoLink
 from shared.security import verify_passport
 from shared.security.cognito import verify_cognito_token
 from app.api import deps
@@ -42,18 +40,15 @@ class RefreshRequest(BaseModel):
     email: EmailStr  # Required for Cognito SecretHash with username_attributes=["email"]
 
 
-def _build_passport(user_sub: str, email: str, db: Session) -> str:
+def _build_passport(user_sub: str, email: str) -> str:
     """
     Build a Passport JWT for the given user.
 
-    The JWT carries user_id, email, and a repo_count hint — NOT permissions.
+    The JWT carries only stable identity claims (user_id, email).
     Downstream services resolve roles via GET /v1/internal/repos/{id}/role
-    with a 60-second TTL cache.
+    with a 60-second TTL cache, not from JWT claims.
     """
-    repo_count = db.exec(
-        select(func.count()).select_from(UserRepoLink).where(UserRepoLink.user_id == user_sub)
-    ).one()
-    return create_passport_token(user_id=user_sub, email=email, repo_count=repo_count)
+    return create_passport_token(user_id=user_sub, email=email)
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=MessageResponse, responses=_400)
@@ -74,12 +69,11 @@ def confirm(payload: ConfirmRequest, cognito: CognitoService = Depends(deps.get_
 @router.post("/login", response_model=Token, responses={**_401, 403: {"description": "Account not confirmed"}})
 def login(
     payload: LoginRequest,
-    db: Session = Depends(deps.get_db),
     cognito: CognitoService = Depends(deps.get_cognito),
 ):
     aws_auth = cognito.login(payload.email, payload.password)
     decoded = verify_cognito_token(aws_auth["IdToken"])
-    passport_jwt = _build_passport(decoded["sub"], payload.email, db)
+    passport_jwt = _build_passport(decoded["sub"], payload.email)
     return Token(
         access_token=passport_jwt,
         token_type="bearer",
@@ -90,7 +84,6 @@ def login(
 @router.post("/refresh", response_model=Token, responses=_401)
 def refresh(
     payload: RefreshRequest,
-    db: Session = Depends(deps.get_db),
     cognito: CognitoService = Depends(deps.get_cognito),
 ):
     """
@@ -101,7 +94,7 @@ def refresh(
     """
     aws_auth = cognito.refresh_session(payload.refresh_token, payload.email)
     decoded = verify_cognito_token(aws_auth["IdToken"])
-    passport_jwt = _build_passport(decoded["sub"], payload.email, db)
+    passport_jwt = _build_passport(decoded["sub"], payload.email)
     return Token(access_token=passport_jwt, token_type="bearer")
 
 

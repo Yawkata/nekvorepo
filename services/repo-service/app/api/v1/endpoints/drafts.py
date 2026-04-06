@@ -39,6 +39,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     status,
@@ -713,6 +714,7 @@ def upload_file(
     draft_id: uuid.UUID,
     path: Annotated[str, Form(min_length=1, max_length=_PATH_MAX)],
     file: Annotated[UploadFile, File()],
+    request: Request,
     db: Session = Depends(deps.get_db),
     efs: EFSService = Depends(deps.get_efs),
     member: tuple = Depends(deps.require_member),
@@ -728,6 +730,22 @@ def upload_file(
     - 409 if draft status is committing.
     - 413 if file exceeds 100 MB.
     """
+    # Early rejection using the Content-Length header — avoids buffering the
+    # entire body into memory before discovering it is oversized.
+    # Content-Length reflects the total multipart request body (file + form
+    # fields + boundaries), so this is a conservative upper-bound check. The
+    # precise per-file check below is the authoritative enforcement.
+    raw_cl = request.headers.get("content-length")
+    if raw_cl is not None:
+        try:
+            if int(raw_cl) > _UPLOAD_MAX:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File exceeds the 100 MB upload limit.",
+                )
+        except ValueError:
+            pass  # malformed Content-Length — fall through to the precise check
+
     passport, role = member
     _reject_deleted_ext(path)
     _require_author_or_admin(role)

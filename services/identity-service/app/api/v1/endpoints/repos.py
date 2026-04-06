@@ -1,27 +1,36 @@
 """
-Repository lifecycle endpoints.
+Repository management endpoints.
+
+Moved here from workflow-service because identity-service owns both repo_heads
+(repository metadata) and user_repo_links (membership). Co-locating these
+endpoints eliminates the cross-service HTTP call that was previously required
+during repo creation and makes the saga fully atomic.
+
+  POST /v1/repos            — create a repository (fully internal saga)
+  GET  /v1/repos            — list repos the caller is a member of
+  GET  /v1/repos/{repo_id}  — fetch a single repo's details
 """
 import re
 import uuid
-from typing import Optional
 from datetime import datetime
+from typing import Optional
+
 import structlog
-from fastapi import APIRouter, Depends, Security, HTTPException
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, HTTPException, Security
 from pydantic import BaseModel, field_validator
 from sqlalchemy.exc import IntegrityError
-from shared.models.workflow import RepoHead
-from shared.models.identity import UserRepoLink
-from shared.security import verify_passport, TokenData
+from sqlmodel import Session, select
+
 from shared.constants import RepoRole
+from shared.models.identity import UserRepoLink
+from shared.models.workflow import RepoHead
+from shared.security import TokenData, verify_passport
 from app.api import deps
-from app.services import identity_client
 
 log = structlog.get_logger()
 router = APIRouter()
 
-# Per spec: "alphanumeric characters plus hyphens and spaces"
-# No leading/trailing/consecutive spaces enforced by field_validator.
+# Repository name: alphanumeric, hyphens, and spaces; no leading/trailing/consecutive spaces.
 _REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 \-]*$")
 
 
@@ -84,7 +93,7 @@ class RepoListItem(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# POST /v1/repos
 # ---------------------------------------------------------------------------
 
 @router.post(
@@ -103,16 +112,16 @@ def create_repo(
     passport: TokenData = Security(verify_passport),
 ):
     """
-    Creates a new repository owned by the authenticated user.
+    Creates a new repository and registers the caller as admin.
 
-    Saga pattern — the FK on user_repo_links.repo_id requires the repo_heads row
-    to exist before identity-service can insert the membership:
+    The saga is fully internal — identity-service owns both repo_heads and
+    user_repo_links, so both writes happen in a single atomic transaction.
+    There is no compensating HTTP call on failure; the DB rollback handles it.
 
       1. Validate uniqueness (read-only query).
-      2. Persist repo_heads row (DB write).
-         → On IntegrityError: 409 (race-condition duplicate).
-      3. Call identity-service to register the creator as admin.
-         → On failure: compensate by deleting the repo row, then propagate error.
+      2. INSERT repo_heads (flush to get the PK without committing).
+      3. INSERT user_repo_links (admin role) in the same transaction.
+      4. COMMIT — both rows land atomically, or neither does.
     """
     # Step 1 — friendly duplicate guard ahead of the DB constraint
     existing = db.exec(
@@ -127,7 +136,7 @@ def create_repo(
             detail=f"You already own a repository named '{body.repo_name}'.",
         )
 
-    # Step 2 — write repo_heads (must come before identity-service call due to FK)
+    # Steps 2 & 3 — single atomic transaction
     try:
         repo = RepoHead(
             repo_name=body.repo_name,
@@ -136,6 +145,14 @@ def create_repo(
             version=0,
         )
         db.add(repo)
+        db.flush()  # materialise repo.id without committing
+
+        link = UserRepoLink(
+            repo_id=repo.id,
+            user_id=passport.user_id,
+            role=RepoRole.admin,
+        )
+        db.add(link)
         db.commit()
         db.refresh(repo)
     except IntegrityError:
@@ -146,28 +163,15 @@ def create_repo(
         )
     except Exception:
         db.rollback()
-        log.exception("create_repo_db_failed")
-        raise HTTPException(status_code=500, detail="Failed to persist repository.")
+        log.exception("create_repo_failed")
+        raise HTTPException(status_code=500, detail="Failed to create repository.")
 
-    repo_id = repo.id
-
-    # Step 3 — register admin membership; compensate on failure
-    try:
-        identity_client.create_membership(
-            repo_id=repo_id,
-            user_id=passport.user_id,
-            role=RepoRole.admin,
-        )
-    except HTTPException:
-        try:
-            db.delete(repo)
-            db.commit()
-        except Exception:
-            log.exception("create_repo_compensation_failed", repo_id=str(repo_id))
-        raise
-
-    log.info("repo_created", repo_id=str(repo.id), repo_name=repo.repo_name, owner_id=repo.owner_id)
-
+    log.info(
+        "repo_created",
+        repo_id=str(repo.id),
+        repo_name=repo.repo_name,
+        owner_id=repo.owner_id,
+    )
     return RepoResponse(
         repo_id=repo.id,
         repo_name=repo.repo_name,
@@ -180,16 +184,14 @@ def create_repo(
 
 
 # ---------------------------------------------------------------------------
-# GET /v1/repos — list all repos the caller is a member of
+# GET /v1/repos
 # ---------------------------------------------------------------------------
 
 @router.get(
     "",
     response_model=list[RepoListItem],
     summary="List repositories the caller is a member of",
-    responses={
-        401: {"description": "Invalid or expired token"},
-    },
+    responses={401: {"description": "Invalid or expired token"}},
 )
 def list_repos(
     db: Session = Depends(deps.get_db),
@@ -199,43 +201,34 @@ def list_repos(
     Returns every repository in which the authenticated user holds any role,
     sorted by creation date descending (newest first).
 
-    Implemented as two queries (no N+1):
-      1. SELECT all UserRepoLink rows for this user.
-      2. SELECT all matching RepoHead rows via IN clause.
+    Single JOIN query — no N+1, no cross-service calls.
+    For commit activity data see GET /v1/repos/{id}/commits/history on
+    workflow-service.
     """
-    links = db.exec(
-        select(UserRepoLink).where(UserRepoLink.user_id == passport.user_id)
-    ).all()
-
-    if not links:
-        return []
-
-    repo_ids = [link.repo_id for link in links]
-    role_map: dict[uuid.UUID, str] = {link.repo_id: link.role for link in links}
-
-    repos = db.exec(
-        select(RepoHead)
-        .where(RepoHead.id.in_(repo_ids))  # type: ignore[attr-defined]
+    rows = db.exec(
+        select(UserRepoLink, RepoHead)
+        .join(RepoHead, UserRepoLink.repo_id == RepoHead.id)
+        .where(UserRepoLink.user_id == passport.user_id)
         .order_by(RepoHead.created_at.desc())  # type: ignore[union-attr]
     ).all()
 
     return [
         RepoListItem(
-            repo_id=r.id,
-            repo_name=r.repo_name,
-            description=r.description,
-            owner_id=r.owner_id,
-            latest_commit_hash=r.latest_commit_hash,
-            version=r.version,
-            created_at=r.created_at,
-            role=role_map.get(r.id, ""),
+            repo_id=repo.id,
+            repo_name=repo.repo_name,
+            description=repo.description,
+            owner_id=repo.owner_id,
+            latest_commit_hash=repo.latest_commit_hash,
+            version=repo.version,
+            created_at=repo.created_at,
+            role=link.role,
         )
-        for r in repos
+        for link, repo in rows
     ]
 
 
 # ---------------------------------------------------------------------------
-# GET /v1/repos/{repo_id} — fetch a single repo's details
+# GET /v1/repos/{repo_id}
 # ---------------------------------------------------------------------------
 
 @router.get(
@@ -251,12 +244,23 @@ def list_repos(
 def get_repo(
     repo_id: uuid.UUID,
     db: Session = Depends(deps.get_db),
-    membership: tuple[TokenData, str] = Depends(deps.require_member),
+    passport: TokenData = Security(verify_passport),
 ):
     """
-    Returns metadata for a single repository.  Any member role is sufficient.
+    Returns metadata for a single repository. Any member role is sufficient.
+
+    Membership is verified inline against user_repo_links — no HTTP call to
+    identity-service is needed because this IS identity-service.
     """
-    _, role = membership
+    link = db.exec(
+        select(UserRepoLink).where(
+            UserRepoLink.repo_id == repo_id,
+            UserRepoLink.user_id == passport.user_id,
+        )
+    ).first()
+    if not link:
+        raise HTTPException(status_code=403, detail="Not a member of this repository.")
+
     repo = db.get(RepoHead, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found.")
@@ -269,5 +273,5 @@ def get_repo(
         latest_commit_hash=repo.latest_commit_hash,
         version=repo.version,
         created_at=repo.created_at,
-        role=role,
+        role=link.role,
     )
