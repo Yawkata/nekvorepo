@@ -6,9 +6,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import text
-from shared.database import engine
+from app.database import engine
 from shared.logging import configure_logging
-from shared.security.cognito import JWKS_URL
+from app.security.cognito import JWKS_URL
 from app.api.v1.api import api_router
 from app.core.config import settings
 
@@ -35,10 +35,6 @@ app = FastAPI(
                 "Register, confirm, and log in users. The `/login` response includes an "
                 "`access_token` (Passport JWT) — use it to authorize protected endpoints."
             ),
-        },
-        {
-            "name": "Users",
-            "description": "User-facing operations — returns the list of accessible repositories.",
         },
         {
             "name": "Internal",

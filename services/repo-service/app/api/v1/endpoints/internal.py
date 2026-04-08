@@ -18,8 +18,8 @@ from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session
 
-from shared.models.workflow import Blob
-from shared.storage import StorageManager
+from shared.models.repo import Blob
+from app.services.storage import StorageManager
 from app.api import deps
 from app.services import identity_client
 from app.services.efs import EFSService

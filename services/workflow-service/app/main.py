@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import text, Session
-from shared.database import engine
+from app.database import engine
 from shared.logging import configure_logging
 from app.api.v1.api import api_router
 from app.core.config import settings

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, Security, status
 from pydantic import BaseModel, EmailStr
-from shared.schemas.auth import Token, TokenData
+from typing import Optional
+from shared.schemas.auth import TokenData
 from shared.security import verify_passport
-from shared.security.cognito import verify_cognito_token
+from app.security.cognito import verify_cognito_token
 from app.api import deps
 from app.services.cognito import CognitoService
 from app.core.security import create_passport_token
@@ -12,6 +13,12 @@ router = APIRouter()
 _401 = {401: {"description": "Invalid or expired token"}}
 _400 = {400: {"description": "Validation error (e.g. email already registered, bad password)"}}
 _404 = {404: {"description": "User not found"}}
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    refresh_token: Optional[str] = None  # Cognito opaque refresh token (30-day TTL)
 
 
 class MessageResponse(BaseModel):

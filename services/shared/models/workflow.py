@@ -4,7 +4,7 @@ from sqlmodel import SQLModel, Field, Column, DateTime
 from sqlalchemy import func, Enum as SAEnum, ForeignKey, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from datetime import datetime
-from ..constants import NodeType, CommitStatus, DraftStatus
+from ..constants import NodeType, CommitStatus
 
 
 class RepoHead(SQLModel, table=True):
@@ -48,26 +48,6 @@ class RepoTreeEntry(SQLModel, table=True):
     content_hash: str = Field(max_length=64)  # Points to blobs.blob_hash or another tree_hash
 
 
-class Blob(SQLModel, table=True):
-    """Table 6 — S3-backed binary content registry."""
-    __tablename__ = "blobs"
-
-    id: Optional[uuid.UUID] = Field(
-        default_factory=uuid.uuid4,
-        sa_column=Column(
-            PGUUID(as_uuid=True),
-            primary_key=True,
-            server_default=text("gen_random_uuid()"),
-        ),
-    )
-    blob_hash: str = Field(unique=True, index=True, max_length=64)  # SHA-256 hex; also used as the S3 object key
-    size: int = Field(default=0, nullable=False)
-    content_type: str = Field(default="text/plain", nullable=False)
-    created_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    )
-
-
 class RepoCommit(SQLModel, table=True):
     """Table 5 — Commit records."""
     __tablename__ = "repo_commits"
@@ -109,44 +89,3 @@ class RepoCommit(SQLModel, table=True):
     )
 
 
-class Draft(SQLModel, table=True):
-    """Table 8 — Working draft for a pending commit submission."""
-    __tablename__ = "drafts"
-
-    id: Optional[uuid.UUID] = Field(
-        default_factory=uuid.uuid4,
-        sa_column=Column(
-            PGUUID(as_uuid=True),
-            primary_key=True,
-            server_default=text("gen_random_uuid()"),
-        ),
-    )
-    repo_id: Optional[uuid.UUID] = Field(
-        default=None,
-        sa_column=Column(
-            PGUUID(as_uuid=True),
-            ForeignKey("repo_heads.id"),
-            nullable=False,
-            index=True,
-        ),
-    )
-    user_id: str = Field(max_length=64, index=True)  # Cognito sub (spec field name)
-    label: Optional[str] = Field(default=None, max_length=100)  # User-defined draft label
-    base_commit_hash: Optional[str] = Field(default=None, max_length=64)
-    commit_hash: Optional[str] = Field(default=None, max_length=64)  # FK to repo_commits after submit
-    status: DraftStatus = Field(
-        sa_column=Column(
-            SAEnum(DraftStatus), server_default=DraftStatus.editing, nullable=False
-        )
-    )
-    created_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    )
-    updated_at: Optional[datetime] = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            server_default=func.now(),
-            onupdate=func.now(),
-            nullable=False,
-        )
-    )

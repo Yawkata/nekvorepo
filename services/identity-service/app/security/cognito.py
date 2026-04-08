@@ -1,9 +1,11 @@
 """
-Cognito JWKS verification.
+Cognito JWKS verification — identity-service only.
 
-Import ONLY in the identity-service. No other service should touch this module.
-It creates a module-level JWKS cache at import time and requires
+This module creates a module-level JWKS cache at import time and requires
 COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID environment variables.
+
+No other service should import from this module.  Passport JWT verification
+for all other services is handled by shared.security.passport.
 """
 import os
 import time

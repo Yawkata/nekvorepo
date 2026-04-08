@@ -22,14 +22,15 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from shared.constants import CommitStatus, DraftStatus, NodeType, RepoRole
-from shared.models.workflow import Draft, RepoCommit, RepoHead, RepoTreeEntry, RepoTreeRoot
+from shared.models.repo import Draft
+from shared.models.workflow import RepoCommit, RepoHead, RepoTreeEntry, RepoTreeRoot
 from shared.tree_utils import collect_blobs
 from shared.schemas.auth import TokenData
 
 from app.api import deps
 from app.core.config import settings
 from app.services import repo_client
-from shared.notifications import send_notification
+from app.services.notifications import send_notification
 
 log = structlog.get_logger()
 router = APIRouter()

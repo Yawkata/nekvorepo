@@ -1,4 +1,4 @@
-from shared.database import get_session as get_db
+from app.database import get_session as get_db  # noqa: F401 — re-exported
 from app.services.cognito import CognitoService
 
 

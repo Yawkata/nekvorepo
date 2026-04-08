@@ -21,8 +21,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from shared.models.workflow import Blob, RepoCommit, RepoHead
-from shared.storage import StorageManager
+from shared.models.repo import Blob
+from shared.models.workflow import RepoCommit, RepoHead
+from app.services.storage import StorageManager
 from shared.tree_utils import collect_blobs
 from app.api import deps
 

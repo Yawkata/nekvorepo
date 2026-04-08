@@ -11,7 +11,7 @@ import uuid
 
 from fastapi import HTTPException, Security
 
-from shared.database import get_session as get_db  # noqa: F401 — re-exported
+from app.database import get_session as get_db  # noqa: F401 — re-exported
 from shared.security.passport import verify_passport  # noqa: F401 — re-exported
 from shared.schemas.auth import TokenData
 

@@ -7,7 +7,14 @@ from sqlmodel import SQLModel
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
-from shared.models import *
+# Import all models explicitly so SQLModel.metadata is fully populated for
+# autogenerate.  Wildcard imports from shared.models are intentionally avoided
+# — explicit imports make it clear which tables are tracked by this migration
+# environment and prevent accidental schema leakage if a new model file is added.
+from shared.models.identity import UserRepoLink  # noqa: F401
+from shared.models.invite import InviteToken  # noqa: F401
+from shared.models.workflow import RepoHead, RepoTreeRoot, RepoTreeEntry, RepoCommit  # noqa: F401
+from shared.models.repo import Blob, Draft  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

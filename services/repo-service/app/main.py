@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse
 from sqlmodel import text, Session, select
 
 from shared.constants import CommitStatus, DraftStatus
-from shared.database import engine
+from app.database import engine
 from shared.logging import configure_logging
-from shared.models.workflow import Draft, RepoCommit, RepoHead
+from shared.models.repo import Draft
+from shared.models.workflow import RepoCommit, RepoHead
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.services import identity_client

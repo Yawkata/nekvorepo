@@ -48,7 +48,8 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from shared.constants import DraftStatus, RepoRole
-from shared.models.workflow import Draft, RepoHead
+from shared.models.repo import Draft
+from shared.models.workflow import RepoHead
 from app.api import deps
 from app.services.efs import EFSService
 
@@ -1078,9 +1079,9 @@ def _reconstruct_task(
     (rejected / sibling_rejected / approved) and reset to that so the UI
     shows "Try Again" rather than leaving the draft stuck in reconstructing.
     """
-    from shared.database import engine
+    from app.database import engine
     from shared.models.workflow import RepoCommit, RepoHead
-    from shared.storage import StorageManager
+    from app.services.storage import StorageManager
     from shared.constants import CommitStatus
     from shared.tree_utils import collect_blobs
     from sqlmodel import Session as DBSession, select as db_select

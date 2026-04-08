@@ -2,12 +2,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    refresh_token: Optional[str] = None  # Cognito opaque refresh token (30-day TTL)
-
-
 class TokenData(BaseModel):
     """
     Typed representation of a decoded Passport JWT payload.

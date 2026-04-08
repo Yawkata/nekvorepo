@@ -2,7 +2,7 @@
 SES email notifications for commit lifecycle events.
 
 Usage:
-    from shared.notifications import send_notification
+    from app.services.notifications import send_notification
 
     send_notification(
         event="approved",
