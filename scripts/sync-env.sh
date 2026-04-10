@@ -9,6 +9,7 @@ set -eu
 REGION="us-east-1"
 PREFIX="/chrono/dev"
 AWS_PROFILE="chrono-dev"
+export MSYS_NO_PATHCONV=1
 ENV_FILE="$(dirname "$0")/../.env"
 
 if [[ ! -f "$ENV_FILE" ]]; then
