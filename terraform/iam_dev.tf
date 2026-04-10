@@ -21,7 +21,8 @@ resource "aws_iam_user_policy" "local_dev_policy" {
           "cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser",
           "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminSetUserPassword",
           "cognito-idp:AdminInitiateAuth",
-          "ses:SendEmail"
+          "ses:SendEmail",
+          "ssm:GetParameter"
         ]
         Resource = "*" # DEV: Broad for testing. PROD: Will be restricted.
       }

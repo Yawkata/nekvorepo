@@ -1,6 +1,7 @@
 # Create a secret for the DB password
 resource "aws_secretsmanager_secret" "db_pass" {
-  name = "${var.project_name}-db-password"
+  name                    = "${var.project_name}-db-password"
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "db_pass_val" {

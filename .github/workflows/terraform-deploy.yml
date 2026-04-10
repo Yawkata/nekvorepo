@@ -103,6 +103,29 @@ jobs:
         if: github.event_name == 'push' || github.event.inputs.action == 'apply'
         run: terraform apply -auto-approve tfplan
 
+      - name: Push outputs to SSM
+        if: github.event_name == 'push' || github.event.inputs.action == 'apply'
+        run: |
+          OUTPUTS=$(terraform output -json)
+
+          push_param() {
+            local name=$1 value=$2 type=$3
+            aws ssm put-parameter \
+              --name "/chrono/dev/$name" \
+              --value "$value" \
+              --type "$type" \
+              --overwrite \
+              --region "$AWS_REGION"
+          }
+
+          push_param "cognito_pool_id"       "$(echo "$OUTPUTS" | jq -r '.cognito_pool_id.value')"       "String"
+          push_param "cognito_client_id"     "$(echo "$OUTPUTS" | jq -r '.cognito_client_id.value')"     "String"
+          push_param "cognito_client_secret" "$(echo "$OUTPUTS" | jq -r '.cognito_client_secret.value')" "SecureString"
+          push_param "dev_access_key_id"     "$(echo "$OUTPUTS" | jq -r '.dev_access_key_id.value')"     "String"
+          push_param "dev_secret_access_key" "$(echo "$OUTPUTS" | jq -r '.dev_secret_access_key.value')" "SecureString"
+          push_param "s3_bucket_name"        "$(echo "$OUTPUTS" | jq -r '.s3_bucket_name.value')"        "String"
+          push_param "rds_endpoint"          "$(echo "$OUTPUTS" | jq -r '.rds_endpoint.value')"          "String"
+
       - name: Terraform Destroy
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
         run: terraform destroy -auto-approve
