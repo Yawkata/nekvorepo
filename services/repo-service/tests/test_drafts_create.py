@@ -9,9 +9,11 @@ Coverage:
   Happy path   — 201, response shape, EFS dir created, DB row persisted
   Status logic — editing when no commits, reconstructing when repo has commits
   Mode A       — copy EFS, inherit base_commit_hash, status logic
-  Role checks  — admin/author → 201; reviewer/reader/non-member → 403
   Validation   — label too long → 422, repo not found → 404
   Auth         — no token → 401, expired → 401
+
+Note: role-based access for this endpoint is tested exhaustively in
+test_drafts_role_access.py::TestCreateDraftRoleAccess.
 """
 
 import os
@@ -62,19 +64,13 @@ class TestCreateDraftSuccess:
         assert data["status"] == "editing"
 
     def test_status_reconstructing_when_repo_has_commits(
-        self, client, mock_identity_client, auth_headers, make_repo, make_commit
+        self, client, mock_identity_client, auth_headers, make_repo, db_session
     ):
-        repo = make_repo()
-        commit = make_commit(repo_id=repo.id)
-        # Advance the repo head so it has a latest_commit_hash
-        from shared.models.workflow import RepoHead
-        from sqlmodel import Session
-        repo.latest_commit_hash = commit.commit_hash
-        # We need a db session here — use make_repo's db_session indirectly
-        r = client.post(_url(repo.id), json={}, headers=auth_headers())
-        # Status depends on whether repo has a latest_commit_hash
-        # If latest_commit_hash is set, status = reconstructing
-        assert r.status_code == 201
+        """When the repo already has a latest_commit_hash the new draft starts in
+        'reconstructing' so the background daemon can reconstruct it from S3."""
+        repo = make_repo(latest_commit_hash="a" * 64)
+        data = client.post(_url(repo.id), json={}, headers=auth_headers()).json()
+        assert data["status"] == "reconstructing"
 
     def test_efs_directory_created(self, client, mock_identity_client, auth_headers, make_repo, tmp_efs):
         repo = make_repo()
@@ -154,33 +150,6 @@ class TestCreateDraftModeA:
             select(Draft).where(Draft.id == data["draft_id"])
         ).first()
         assert new_draft.base_commit_hash == "a" * 64
-
-
-class TestCreateDraftRoles:
-    def test_admin_can_create(self, client, mock_identity_client, auth_headers, make_repo):
-        mock_identity_client.return_value = "admin"
-        repo = make_repo()
-        assert client.post(_url(repo.id), json={}, headers=auth_headers()).status_code == 201
-
-    def test_author_can_create(self, client, mock_identity_client, auth_headers, make_repo):
-        mock_identity_client.return_value = "author"
-        repo = make_repo()
-        assert client.post(_url(repo.id), json={}, headers=auth_headers()).status_code == 201
-
-    def test_reviewer_cannot_create(self, client, mock_identity_client, auth_headers, make_repo):
-        mock_identity_client.return_value = "reviewer"
-        repo = make_repo()
-        assert client.post(_url(repo.id), json={}, headers=auth_headers()).status_code == 403
-
-    def test_reader_cannot_create(self, client, mock_identity_client, auth_headers, make_repo):
-        mock_identity_client.return_value = "reader"
-        repo = make_repo()
-        assert client.post(_url(repo.id), json={}, headers=auth_headers()).status_code == 403
-
-    def test_non_member_cannot_create(self, client, mock_identity_client, auth_headers, make_repo):
-        mock_identity_client.return_value = None
-        repo = make_repo()
-        assert client.post(_url(repo.id), json={}, headers=auth_headers()).status_code == 403
 
 
 class TestCreateDraftValidation:

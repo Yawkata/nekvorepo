@@ -11,12 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN curl -sS https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /root.crt
 
-# Resolve dependencies without --frozen so a pre-committed uv.lock is not required.
-# After first build: run `uv lock` in services/repo-service/ and commit uv.lock for
-# reproducible production builds, then switch this line to `uv sync --frozen ...`.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=services/repo-service/pyproject.toml,target=pyproject.toml \
-    uv sync --no-install-project --no-dev
+    --mount=type=bind,source=services/repo-service/uv.lock,target=uv.lock \
+    uv sync --frozen --no-install-project --no-dev
 
 # Stage 2: Runtime
 FROM python:3.13-slim

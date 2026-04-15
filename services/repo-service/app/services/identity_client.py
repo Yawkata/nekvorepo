@@ -38,6 +38,15 @@ log = structlog.get_logger()
 _client: httpx.Client | None = None
 
 
+def _outbound_headers() -> dict[str, str]:
+    """Build headers for outbound requests, propagating the correlation ID."""
+    hdrs = {"Content-Type": "application/json"}
+    ctx = structlog.contextvars.get_contextvars()
+    if cid := ctx.get("correlation_id"):
+        hdrs["X-Correlation-ID"] = cid
+    return hdrs
+
+
 def setup(base_url: str) -> None:
     """Initialise the shared HTTP client.  Called once at application startup."""
     global _client
@@ -139,6 +148,7 @@ def get_role(repo_id: uuid.UUID, user_id: str, ttl: int = 60) -> str | None:
         resp = _get().get(
             f"/v1/internal/repos/{repo_id}/role",
             params={"user_id": user_id},
+            headers=_outbound_headers(),
         )
         if resp.status_code == 404:
             return None  # not a member

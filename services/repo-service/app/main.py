@@ -150,6 +150,17 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all for unhandled exceptions — return structured JSON with correlation ID."""
+    log.error("unhandled_exception", error=str(exc), exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred.", "type": "internal_error"},
+        headers={"X-Correlation-ID": request.headers.get("X-Correlation-ID", "")},
+    )
+
+
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
     """Attach a per-request correlation ID and emit a structured access log entry."""

@@ -33,6 +33,7 @@ COPY --from=builder --chown=migratoruser:migratorgroup /opt/venv /opt/venv
 COPY --chown=migratoruser:migratorgroup services/shared /app/shared
 COPY --chown=migratoruser:migratorgroup services/database-migrations/migrations /app/migrations
 COPY --chown=migratoruser:migratorgroup services/database-migrations/alembic.ini /app/alembic.ini
+COPY --chown=migratoruser:migratorgroup services/database-migrations/init_roles.py /app/init_roles.py
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app" \

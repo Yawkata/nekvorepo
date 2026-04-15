@@ -13,6 +13,28 @@ services:
     # depends_on: service_completed_successfully ensures dependents only start
     # after this exits 0.
 
+  init-db-roles:
+    build:
+      context: .
+      dockerfile: services/database-migrations/Dockerfile
+    container_name: nekvo-init-roles
+    env_file: .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - IDENTITY_DB_PASSWORD=${IDENTITY_DB_PASSWORD}
+      - REPO_DB_PASSWORD=${REPO_DB_PASSWORD}
+      - WORKFLOW_DB_PASSWORD=${WORKFLOW_DB_PASSWORD}
+    command: ["python", "/app/init_roles.py"]
+    restart: "no"
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+    networks:
+      - chrono_network
+    # One-shot: creates identity_svc_user, repo_svc_user, workflow_svc_user
+    # (or refreshes their passwords). Run manually or as part of first-deploy:
+    #   docker-compose run --rm init-db-roles
+
   identity-service:
     build:
       context: .
@@ -22,7 +44,10 @@ services:
       - "8001:8000"
     env_file: .env
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      # Uses the least-privilege identity_svc_user (inherits identity_svc role).
+      # Falls back to DATABASE_URL so the stack still works before init-db-roles
+      # has been run (e.g. on a first pull without per-service users created yet).
+      - DATABASE_URL=${IDENTITY_DATABASE_URL:-${DATABASE_URL}}
     depends_on:
       database-migrations:
         condition: service_completed_successfully
@@ -45,7 +70,8 @@ services:
       - "8002:8000"
     env_file: .env
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      # Uses the least-privilege workflow_svc_user (inherits workflow_svc role).
+      - DATABASE_URL=${WORKFLOW_DATABASE_URL:-${DATABASE_URL}}
       - IDENTITY_SERVICE_URL=http://identity-service:8000
       - REPO_SERVICE_URL=http://repo-service:8000
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
@@ -79,7 +105,8 @@ services:
       - "8003:8000"
     env_file: .env
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      # Uses the least-privilege repo_svc_user (inherits repo_svc role).
+      - DATABASE_URL=${REPO_DATABASE_URL:-${DATABASE_URL}}
       - IDENTITY_SERVICE_URL=http://identity-service:8000
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
@@ -109,4 +136,3 @@ services:
 networks:
   chrono_network:
     driver: bridge
-

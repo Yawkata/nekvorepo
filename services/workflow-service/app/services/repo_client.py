@@ -28,6 +28,15 @@ _client: httpx.Client | None = None
 # Lifecycle management (called from app lifespan)
 # ---------------------------------------------------------------------------
 
+def _outbound_headers() -> dict[str, str]:
+    """Build headers for outbound requests, propagating the correlation ID."""
+    hdrs = {"Content-Type": "application/json"}
+    ctx = structlog.contextvars.get_contextvars()
+    if cid := ctx.get("correlation_id"):
+        hdrs["X-Correlation-ID"] = cid
+    return hdrs
+
+
 def setup(base_url: str) -> None:
     """Initialize the shared HTTP client. Must be called once at startup."""
     global _client
@@ -93,6 +102,7 @@ def sync_blobs(draft_id: uuid.UUID, repo_id: uuid.UUID, user_id: str) -> dict[st
                 "repo_id": str(repo_id),
                 "user_id": user_id,
             },
+            headers=_outbound_headers(),
         )
         resp.raise_for_status()
         return resp.json()["blobs"]
@@ -125,6 +135,7 @@ def wipe_draft(draft_id: uuid.UUID, repo_id: uuid.UUID, user_id: str) -> None:
         resp = _get().delete(
             f"/v1/internal/drafts/{draft_id}",
             params={"repo_id": str(repo_id), "user_id": user_id},
+            headers=_outbound_headers(),
         )
         resp.raise_for_status()
         log.info("draft_efs_wiped", draft_id=str(draft_id), repo_id=str(repo_id))
