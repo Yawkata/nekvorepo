@@ -200,6 +200,14 @@ class TestApproveCommitStateGuards:
         r = client.post(_url(repo.id, commit.commit_hash), headers=auth_headers(user_id=_REVIEWER_ID))
         assert r.status_code == 409
 
+    def test_sibling_rejected_returns_409(self, client, mock_identity_client, mock_repo_client, auth_headers, make_repo, make_commit):
+        """A commit that was already sibling-rejected cannot be approved."""
+        mock_identity_client.return_value = "reviewer"
+        repo = make_repo()
+        commit = make_commit(repo_id=repo.id, owner_id=_AUTHOR_ID, status=CommitStatus.sibling_rejected)
+        r = client.post(_url(repo.id, commit.commit_hash), headers=auth_headers(user_id=_REVIEWER_ID))
+        assert r.status_code == 409
+
     def test_stale_commit_returns_409(self, client, mock_identity_client, mock_repo_client, auth_headers, make_repo, make_commit):
         """Commit parent does not match repo's current latest_commit_hash."""
         mock_identity_client.return_value = "reviewer"

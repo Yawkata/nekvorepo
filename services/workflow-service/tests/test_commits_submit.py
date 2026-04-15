@@ -266,6 +266,16 @@ class TestSubmitCommitDraftValidation:
         draft = make_draft(repo_id=repo.id, status=DraftStatus.rejected)
         assert client.post(_url(repo.id), json=_body(draft.id), headers=auth_headers()).status_code == 409
 
+    def test_sibling_rejected_status_returns_409(self, client, mock_identity_client, mock_repo_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, status=DraftStatus.sibling_rejected)
+        assert client.post(_url(repo.id), json=_body(draft.id), headers=auth_headers()).status_code == 409
+
+    def test_reconstructing_status_returns_409(self, client, mock_identity_client, mock_repo_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, status=DraftStatus.reconstructing)
+        assert client.post(_url(repo.id), json=_body(draft.id), headers=auth_headers()).status_code == 409
+
 
 # ── Payload validation ────────────────────────────────────────────────────────
 

@@ -2,8 +2,8 @@
 Tests for POST /v1/repos/{repo_id}/drafts/{draft_id}/upload — upload a binary file.
 
 Coverage:
-  Happy path   — 200, path/size/is_binary, file written to EFS
-  Status gates — committing → 409, non-writable → 400
+  Happy path   — 200, path/size/is_binary, file written to EFS, auto-reopen rejected
+  Status gates — committing → 409, pending/sibling_rejected/reconstructing → 400
   Validation   — file > 100 MB → 413
   Error cases  — 403 wrong owner
   Auth         — no token → 401
@@ -73,6 +73,21 @@ class TestUploadFileSuccess:
         assert r.status_code == 200
 
 
+class TestUploadFileAutoReopen:
+    def test_rejected_draft_reopened_to_editing(
+        self, client, mock_identity_client, auth_headers, make_repo, make_draft, db_session
+    ):
+        """Upload to a rejected draft must auto-reopen it to editing (mirrors save behaviour)."""
+        from sqlmodel import select
+        from shared.models.repo import Draft
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.rejected)
+        _upload(client, repo.id, draft.id, "fix.bin", b"\x01\x02", auth_headers(user_id=_USER_ID))
+        db_session.expire_all()
+        updated = db_session.exec(select(Draft).where(Draft.id == draft.id)).first()
+        assert updated.status == DraftStatus.editing
+
+
 class TestUploadFileStatusGates:
     def test_committing_returns_409(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
         repo = make_repo()
@@ -83,6 +98,24 @@ class TestUploadFileStatusGates:
     def test_approved_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
         repo = make_repo()
         draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.approved)
+        r = _upload(client, repo.id, draft.id, "f.bin", b"data", auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_pending_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.pending)
+        r = _upload(client, repo.id, draft.id, "f.bin", b"data", auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_sibling_rejected_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.sibling_rejected)
+        r = _upload(client, repo.id, draft.id, "f.bin", b"data", auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_reconstructing_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.reconstructing)
         r = _upload(client, repo.id, draft.id, "f.bin", b"data", auth_headers(user_id=_USER_ID))
         assert r.status_code == 400
 

@@ -2,8 +2,9 @@
 Tests for DELETE /v1/repos/{repo_id}/drafts/{draft_id}/files/{path} — mark file/folder deleted.
 
 Coverage:
-  Happy path  — 204, .deleted marker created
+  Happy path  — 204, .deleted marker created, auto-reopen rejected draft
   Folder      — marks entire subtree via single .deleted marker
+  Status gates — committing → 409, pending/approved/sibling_rejected → 400
   Error cases — 403 wrong owner, 404 draft not found, 400 .deleted path
   Auth        — no token → 401
 """
@@ -59,18 +60,38 @@ class TestDeleteFileSuccess:
         assert updated.status == DraftStatus.editing
 
 
+class TestDeleteFileStatusGates:
+    def test_committing_returns_409(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.committing)
+        r = client.delete(_url(repo.id, draft.id, "file.txt"), headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 409
+
+    def test_pending_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.pending)
+        r = client.delete(_url(repo.id, draft.id, "file.txt"), headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_approved_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.approved)
+        r = client.delete(_url(repo.id, draft.id, "file.txt"), headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_sibling_rejected_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.sibling_rejected)
+        r = client.delete(_url(repo.id, draft.id, "file.txt"), headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+
 class TestDeleteFileErrors:
     def test_deleted_path_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
         repo = make_repo()
         draft = make_draft(repo_id=repo.id, user_id=_USER_ID)
         r = client.delete(_url(repo.id, draft.id, "file.txt.deleted"), headers=auth_headers(user_id=_USER_ID))
         assert r.status_code == 400
-
-    def test_committing_returns_409(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
-        repo = make_repo()
-        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.committing)
-        r = client.delete(_url(repo.id, draft.id, "file.txt"), headers=auth_headers(user_id=_USER_ID))
-        assert r.status_code == 409
 
     def test_wrong_owner_returns_403(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
         mock_identity_client.return_value = "author"

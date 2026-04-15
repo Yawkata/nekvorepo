@@ -46,6 +46,12 @@ class TestListCommitsSuccess:
         make_commit(repo_id=repo.id, status=CommitStatus.rejected)
         assert client.get(_url(repo.id), headers=auth_headers()).json() == []
 
+    def test_excludes_sibling_rejected_commits(self, client, mock_identity_client, auth_headers, make_repo, make_commit):
+        mock_identity_client.return_value = "reviewer"
+        repo = make_repo()
+        make_commit(repo_id=repo.id, status=CommitStatus.sibling_rejected)
+        assert client.get(_url(repo.id), headers=auth_headers()).json() == []
+
     def test_response_item_shape(self, client, mock_identity_client, auth_headers, make_repo, make_commit):
         mock_identity_client.return_value = "reviewer"
         repo = make_repo()

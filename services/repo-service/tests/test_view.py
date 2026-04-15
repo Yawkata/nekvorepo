@@ -5,7 +5,7 @@ Tests for view mode endpoints:
 
 Coverage:
   Happy path   — 200, response shape, files list, presigned URL returned
-  ref param    — selects specific commit
+  ref param    — ?ref=<hash> selects a specific commit; unknown ref → 404
   Error cases  — 404 repo not found, 404 commit not found, 404 file not in tree
   Role checks  — all member roles → 200; non-member → 403
   Auth         — no token → 401, expired → 401
@@ -99,6 +99,72 @@ class TestGetViewSuccess:
         assert "path" in item
         assert "content_type" in item
         assert "size" in item
+
+
+class TestGetViewRef:
+    """Tests for the ?ref=<commit_hash> query parameter on the view endpoint."""
+
+    def _setup_repo_with_commit(self, make_repo, make_blob, make_tree, make_commit, db_session,
+                                 filename="ref-file.txt", blob_content=b"ref content"):
+        import hashlib
+        from sqlmodel import select
+        from shared.models.workflow import RepoCommit, RepoHead
+        blob_hash = hashlib.sha256(blob_content).hexdigest()
+        make_blob(blob_hash=blob_hash, size=len(blob_content))
+        tree = make_tree({filename: blob_hash})
+        repo = make_repo()
+        commit = make_commit(repo_id=repo.id, owner_id=_USER_ID)
+        db_session.expire_all()
+        c = db_session.exec(select(RepoCommit).where(RepoCommit.id == commit.id)).first()
+        c.tree_id = tree.id
+        db_session.add(c)
+        rh = db_session.get(RepoHead, repo.id)
+        rh.latest_commit_hash = c.commit_hash
+        db_session.add(rh)
+        db_session.commit()
+        return repo, c
+
+    def test_view_with_explicit_ref_returns_files(
+        self, client, mock_identity_client, mock_storage, auth_headers,
+        make_repo, make_blob, make_tree, make_commit, db_session
+    ):
+        """Passing ?ref=<commit_hash> must return the files in that commit's tree."""
+        repo, commit = self._setup_repo_with_commit(
+            make_repo, make_blob, make_tree, make_commit, db_session
+        )
+        data = client.get(_view_url(repo.id, ref=commit.commit_hash), headers=auth_headers()).json()
+        assert data["commit_hash"] == commit.commit_hash
+        assert len(data["files"]) == 1
+        assert data["files"][0]["path"] == "ref-file.txt"
+
+    def test_unknown_ref_returns_404(
+        self, client, mock_identity_client, mock_storage, auth_headers, make_repo
+    ):
+        """A ?ref= that does not match any commit must return 404."""
+        repo = make_repo()
+        r = client.get(_view_url(repo.id, ref="b" * 64), headers=auth_headers())
+        assert r.status_code == 404
+
+    def test_file_url_with_explicit_ref(
+        self, client, mock_identity_client, mock_storage, auth_headers,
+        make_repo, make_blob, make_tree, make_commit, db_session
+    ):
+        """?ref= on the file URL endpoint resolves against the specified commit."""
+        repo, commit = self._setup_repo_with_commit(
+            make_repo, make_blob, make_tree, make_commit, db_session,
+            filename="src/main.py", blob_content=b"print('hello')"
+        )
+        r = client.get(_file_url(repo.id, "src/main.py", ref=commit.commit_hash), headers=auth_headers())
+        assert r.status_code == 200
+        assert "url" in r.json()
+
+    def test_file_url_unknown_ref_returns_404(
+        self, client, mock_identity_client, mock_storage, auth_headers, make_repo
+    ):
+        """A ?ref= pointing to a non-existent commit must return 404 for file URL too."""
+        repo = make_repo()
+        r = client.get(_file_url(repo.id, "any.txt", ref="c" * 64), headers=auth_headers())
+        assert r.status_code == 404
 
 
 class TestGetViewRoles:

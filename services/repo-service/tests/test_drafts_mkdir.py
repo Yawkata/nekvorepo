@@ -85,6 +85,30 @@ class TestMkdirErrors:
         r = client.post(_url(repo.id, draft.id), json={"path": "dir"}, headers=auth_headers(user_id=_USER_ID))
         assert r.status_code == 403
 
+    def test_draft_not_found_returns_404(self, client, mock_identity_client, auth_headers, make_repo):
+        import uuid
+        repo = make_repo()
+        r = client.post(_url(repo.id, uuid.uuid4()), json={"path": "dir"}, headers=auth_headers())
+        assert r.status_code == 404
+
+    def test_pending_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.pending)
+        r = client.post(_url(repo.id, draft.id), json={"path": "dir"}, headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_approved_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.approved)
+        r = client.post(_url(repo.id, draft.id), json={"path": "dir"}, headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
+    def test_sibling_rejected_returns_400(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.sibling_rejected)
+        r = client.post(_url(repo.id, draft.id), json={"path": "dir"}, headers=auth_headers(user_id=_USER_ID))
+        assert r.status_code == 400
+
 
 class TestMkdirValidation:
     def test_path_too_long_returns_422(self, client, mock_identity_client, auth_headers, make_repo, make_draft):

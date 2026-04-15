@@ -12,6 +12,10 @@ from sqlalchemy.exc import OperationalError
 
 
 class TestHealth:
+    def test_no_auth_required(self, client):
+        """Health probe must be reachable without a JWT (used by Kubernetes)."""
+        assert client.get("/health").status_code == 200
+
     def test_returns_200_when_db_up(self, client):
         assert client.get("/health").status_code == 200
 

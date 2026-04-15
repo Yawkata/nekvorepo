@@ -11,8 +11,6 @@ Coverage:
   Auth         — no token 403, expired 401
 """
 
-import time
-
 _URL = "/v1/repos"
 
 
@@ -71,10 +69,17 @@ class TestListReposSuccess:
         assert len(resp_a) == 1 and resp_a[0]["repo_name"] == "a-repo"
         assert len(resp_b) == 1 and resp_b[0]["repo_name"] == "b-repo"
 
-    def test_repos_sorted_newest_first(self, client, auth_headers, make_repo):
-        make_repo(repo_name="first-repo")
-        time.sleep(0.05)  # ensure different created_at timestamps
+    def test_repos_sorted_newest_first(self, client, auth_headers, make_repo, db_session):
+        from datetime import datetime, timedelta, timezone
+        from shared.models.workflow import RepoHead
+        repo_first = make_repo(repo_name="first-repo")
         make_repo(repo_name="second-repo")
+        # Pin a deterministic past timestamp — no sleep, no flakiness
+        db_session.expire_all()
+        first = db_session.get(RepoHead, repo_first.id)
+        first.created_at = datetime.now(timezone.utc) - timedelta(seconds=2)
+        db_session.add(first)
+        db_session.commit()
         items = client.get(_URL, headers=auth_headers()).json()
         assert items[0]["repo_name"] == "second-repo"
         assert items[1]["repo_name"] == "first-repo"

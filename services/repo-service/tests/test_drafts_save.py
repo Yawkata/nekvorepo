@@ -100,6 +100,16 @@ class TestSaveFileSuccess:
         ).json()
         assert data["large_file_warning"] is True
 
+    def test_large_file_warning_false(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
+        repo = make_repo()
+        draft = make_draft(repo_id=repo.id, user_id=_USER_ID)
+        data = client.post(
+            _url(repo.id, draft.id),
+            json={"path": "small.txt", "content": "tiny"},
+            headers=auth_headers(user_id=_USER_ID),
+        ).json()
+        assert data["large_file_warning"] is False
+
     def test_needs_rebase_draft_is_writable(self, client, mock_identity_client, auth_headers, make_repo, make_draft):
         repo = make_repo()
         draft = make_draft(repo_id=repo.id, user_id=_USER_ID, status=DraftStatus.needs_rebase)

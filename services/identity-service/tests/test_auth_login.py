@@ -99,6 +99,13 @@ class TestLoginPassportClaims:
         payload = self._get_passport(client, mock_cognito)
         assert "exp" in payload
 
+    def test_exp_is_approximately_one_hour(self, client, mock_cognito):
+        """exp must be ~1 hour from now — not just present."""
+        import time
+        payload = self._get_passport(client, mock_cognito)
+        expected = int(time.time()) + 3600
+        assert abs(payload["exp"] - expected) < 10  # 10-second tolerance
+
     def test_no_permissions_in_passport(self, client, mock_cognito):
         """Permissions are not embedded in the JWT — callers query the role endpoint."""
         payload = self._get_passport(client, mock_cognito)

@@ -7,8 +7,8 @@ No database access, no Cognito calls.
 
 Coverage:
   Happy path   — 200, body shape, user_id, email
-  Auth failures — no header 403, malformed 401, expired 401, wrong issuer 401,
-                  wrong secret 401, wrong audience 401, wrong scheme 403
+  Auth failures — no header 401, malformed 401, expired 401, wrong issuer 401,
+                  wrong secret 401, wrong audience 401, wrong scheme 401
 """
 
 _URL = "/v1/auth/verify-me"

@@ -149,6 +149,18 @@ def _make_tree_and_commit(db_session, repo_id, owner_id, status):
 # ---------------------------------------------------------------------------
 
 class TestReconstructingSweepNoLinkedCommit:
+    def test_multiple_stuck_drafts_all_recovered(self, db_engine, make_repo):
+        """All drafts in the stuck window are processed in a single sweep pass."""
+        repo = make_repo(latest_commit_hash=None)
+        draft_id_a = _make_stuck_draft(db_engine, repo.id, user_id="user-a")
+        draft_id_b = _make_stuck_draft(db_engine, repo.id, user_id="user-b")
+
+        _run_sweep(db_engine)
+
+        with Session(db_engine) as s:
+            for draft_id in (draft_id_a, draft_id_b):
+                assert s.get(Draft, draft_id).status == DraftStatus.editing
+
     def test_stuck_draft_becomes_editing(self, db_engine, make_repo):
         """No commit, base_commit_hash matches repo head → editing."""
         repo = make_repo(latest_commit_hash=None)
