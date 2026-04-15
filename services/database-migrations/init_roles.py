@@ -21,6 +21,7 @@ import os
 import sys
 
 import psycopg
+from psycopg import sql
 
 # ── Configuration from environment ──────────────────────────────────────────
 
@@ -51,17 +52,24 @@ def main() -> int:
 
                 if row:
                     # User already exists — just refresh the password.
-                    # login_user is a hardcoded identifier (safe to interpolate).
+                    # DDL statements do not support bind parameters, so we use
+                    # sql.Literal which lets psycopg safely escape the value as
+                    # a quoted SQL string literal (e.g. 'mypassword').
                     conn.execute(
-                        f"ALTER USER {login_user} WITH PASSWORD %s",
-                        (password,),
+                        sql.SQL("ALTER USER {} WITH PASSWORD {}").format(
+                            sql.Identifier(login_user),
+                            sql.Literal(password),
+                        )
                     )
                     print(f"  [updated]  {login_user} (password refreshed)")
                 else:
                     # Create new login user inheriting the per-service role.
                     conn.execute(
-                        f"CREATE USER {login_user} WITH PASSWORD %s IN ROLE {role}",
-                        (password,),
+                        sql.SQL("CREATE USER {} WITH PASSWORD {} IN ROLE {}").format(
+                            sql.Identifier(login_user),
+                            sql.Literal(password),
+                            sql.Identifier(role),
+                        )
                     )
                     print(f"  [created]  {login_user}  →  inherits role: {role}")
 
