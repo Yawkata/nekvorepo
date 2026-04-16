@@ -110,6 +110,29 @@ def mock_storage():
         yield mock
 
 
+@pytest.fixture
+def mock_storage_manager():
+    """
+    Patches the StorageManager *class* so that any inline ``StorageManager()``
+    call inside an endpoint or background task (e.g. the rebase / reconstruct
+    handlers) receives the mock instance rather than a live boto3 client.
+
+    By default ``download_blob`` returns empty bytes.  Override per-test:
+
+        mock_storage_manager.download_blob.side_effect = lambda h: content_map[h]
+
+    or:
+
+        mock_storage_manager.download_blob.return_value = b"fixed content"
+    """
+    mock = MagicMock()
+    mock.download_blob.return_value = b""
+    mock.upload_blob.return_value = None
+    mock.blob_exists.return_value = False
+    with patch("app.services.storage.StorageManager", return_value=mock):
+        yield mock
+
+
 # ── Test client ──────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -234,15 +257,18 @@ def make_commit(db_session):
         parent_commit_hash: str | None = None,
         draft_id=None,
         commit_summary: str = "Test commit",
+        tree_id: int | None = None,
     ):
         from shared.constants import CommitStatus
         from shared.models.workflow import RepoCommit, RepoTreeRoot
 
-        tree_hash = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
-        tree_root = RepoTreeRoot(tree_hash=tree_hash)
-        db_session.add(tree_root)
-        db_session.commit()
-        db_session.refresh(tree_root)
+        if tree_id is None:
+            tree_hash = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+            tree_root = RepoTreeRoot(tree_hash=tree_hash)
+            db_session.add(tree_root)
+            db_session.commit()
+            db_session.refresh(tree_root)
+            tree_id = tree_root.id
 
         commit_hash = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
         commit = RepoCommit(
@@ -250,7 +276,7 @@ def make_commit(db_session):
             repo_id=repo_id,
             owner_id=owner_id,
             parent_commit_hash=parent_commit_hash,
-            tree_id=tree_root.id,
+            tree_id=tree_id,
             draft_id=draft_id,
             status=status or CommitStatus.approved,
             commit_summary=commit_summary,
@@ -260,6 +286,27 @@ def make_commit(db_session):
         db_session.refresh(commit)
         return commit
     return _make
+
+
+@pytest.fixture
+def advance_repo_head(db_session):
+    """
+    Advance repo_heads.latest_commit_hash to the given commit_hash.
+    Increments the optimistic-lock version counter.
+
+    Usage:
+        advance_repo_head(repo, commit.commit_hash)
+    """
+    def _advance(repo, commit_hash: str):
+        from shared.models.workflow import RepoHead
+        r = db_session.get(RepoHead, repo.id)
+        r.latest_commit_hash = commit_hash
+        r.version += 1
+        db_session.add(r)
+        db_session.commit()
+        db_session.refresh(r)
+        return r
+    return _advance
 
 
 @pytest.fixture
