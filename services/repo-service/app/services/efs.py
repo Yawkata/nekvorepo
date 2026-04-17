@@ -248,12 +248,34 @@ class EFSService:
         """
         draft = self.draft_dir(user_id, repo_id, draft_id)
         target = _resolve_safe(draft, rel_path)
+
+        # If any ancestor path component exists as a plain file, physically
+        # remove it before calling mkdir.  This occurs when a file (e.g. "lib")
+        # was previously marked deleted via mark_deleted() and the author now
+        # writes under it as a directory (e.g. "lib/core.py").  The .deleted
+        # marker already records the logical deletion; the raw bytes can go.
+        check = draft
+        for part in target.parent.relative_to(draft).parts:
+            check = check / part
+            if check.is_file():
+                check.unlink()
+                break  # mkdir(parents=True) will create the remaining dirs
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
-        # Remove a stale deletion marker, if one exists
+        # Remove the direct deletion marker for this path, if one exists.
         marker = Path(str(target) + _DELETED_EXT)
         if marker.exists():
             marker.unlink()
+        # Remove any ancestor deletion markers so that the new file is not
+        # suppressed by a parent-folder marker (e.g. writing "lib/core.py"
+        # after "lib" was marked deleted must remove "lib.deleted").
+        ancestor = draft
+        for part in target.relative_to(draft).parts[:-1]:
+            ancestor = ancestor / part
+            ancestor_marker = Path(str(ancestor) + _DELETED_EXT)
+            if ancestor_marker.exists():
+                ancestor_marker.unlink()
         return len(content)
 
     def mark_deleted(
