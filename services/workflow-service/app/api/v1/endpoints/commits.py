@@ -638,9 +638,13 @@ def approve_commit(
 
     # Step 7 — mark stale editing drafts as needs_rebase (SKIP LOCKED)
     # FOR UPDATE SKIP LOCKED is a SELECT clause; use a subquery to avoid locking conflicts.
+    # NOTE: base_commit_hash is intentionally NOT updated here — it must remain the
+    # commit the draft was originally based on so that the three-way diff in the
+    # rebase flow has a valid base to compare against.  Only the rebase-continue
+    # endpoint may advance base_commit_hash (to the new HEAD after a successful rebase).
     db.exec(  # type: ignore[arg-type]
         text(
-            "UPDATE drafts SET status = 'needs_rebase', base_commit_hash = :h "
+            "UPDATE drafts SET status = 'needs_rebase' "
             "WHERE id IN ("
             "  SELECT id FROM drafts "
             "  WHERE repo_id = :repo_id "
