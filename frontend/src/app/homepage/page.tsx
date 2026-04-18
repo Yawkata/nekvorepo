@@ -1,14 +1,24 @@
 "use client";
 
 import { CSSProperties } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 
 export default function HomePage() {
+  const [repos, setRepos] = useState<any[]>([]);
+
+  useEffect(() => {
+  const stored = localStorage.getItem("repos");
+  if (stored) {
+    setRepos(JSON.parse(stored));
+  }
+  }, []);
   return (
     <div style={styles.container}>
       
       {/* PURPLE NAVBAR */}
       <div style={styles.navbar}>
-        <h3>MyDashboard</h3>
+        <h3>VSChrono</h3>
         <div style={styles.avatar} />
       </div>
 
@@ -16,14 +26,7 @@ export default function HomePage() {
         
         {/* LEFT SIDEBAR */}
         <div style={styles.sidebar}>
-          <h4>Top repositories</h4>
-          <input placeholder="Find a repository..." style={styles.input} />
-
-          {["repo-one", "repo-two", "repo-three"].map((repo) => (
-            <div key={repo} style={styles.repoItem}>
-              {repo}
-            </div>
-          ))}
+          
         </div>
 
         {/* MAIN */}
@@ -32,48 +35,54 @@ export default function HomePage() {
 
           {/* Actions */}
           <div style={styles.actions}>
-            {["Agent", "Create issue", "Write code", "Git"].map((item) => (
-              <button key={item} style={styles.button}>
-                {item}
-              </button>
+
+              <Link href="/create_repo">
+                  <button style={styles.button}>
+                      Create new repository
+                  </button>
+              </Link>
+          </div>
+
+          {/* SHOW REPOS */}
+          {repos.map((repo) => (
+              <Link key={repo.repo_id} href={`/repo/${repo.repo_id}`}>
+                <div style={styles.card}>
+                  <h3>{repo.repo_name}</h3>
+                  <p style={{ color: "#8b949e" }}>{repo.description}</p>
+                </div>
+              </Link>
             ))}
+
+          {/* FOOTER */}
+        <div style={styles.footer}>
+          <div style={styles.footerLeft}>
+            © 2026 VSChrono
           </div>
 
-          {/* Feed */}
-          <div style={styles.card}>
-            <p><strong>User123</strong> followed someone</p>
-            <p style={{ color: "#8b949e" }}>last week</p>
-          </div>
-
-          <div style={styles.card}>
-            <p><strong>Trending repo</strong></p>
-            <p style={{ color: "#8b949e" }}>
-              AI-powered project example...
-            </p>
+          <div style={styles.footerRight}>
+            <span style={styles.footerLink}>About</span>
+            <span style={styles.footerLink}>Docs</span>
+            <span style={styles.footerLink}>Contact</span>
           </div>
         </div>
+      
+      </div>
 
         {/* RIGHT PANEL */}
         <div style={styles.right}>
-          <h4>Latest updates</h4>
 
-          {["Update 1", "Update 2", "Update 3"].map((item, i) => (
-            <div key={i} style={styles.update}>
-              <p style={{ fontSize: 12, color: "purple" }}>
-                {i + 1} hours ago
-              </p>
-              <p>{item}</p>
-            </div>
-          ))}
         </div>
+        
       </div>
+      
     </div>
+    
   );
 }
 
 const styles: { [key: string]: CSSProperties } = {
   container: {
-    height: "100vh",
+    minHeight: "100vh",
     background: "#0d1117",
     color: "#c9d1d9",
     fontFamily: "Arial",
@@ -83,7 +92,7 @@ const styles: { [key: string]: CSSProperties } = {
 
   navbar: {
     height: 60,
-    background: "purple", // my change
+    background: "purple",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
@@ -131,11 +140,10 @@ const styles: { [key: string]: CSSProperties } = {
   },
 
   main: {
-    flex: 1,
-    padding: 20,
-    height: "100vh"
+  flex: 1,
+  padding: 20,
+  paddingBottom: 70, 
   },
-
   actions: {
     display: "flex",
     gap: 10,
@@ -169,5 +177,33 @@ const styles: { [key: string]: CSSProperties } = {
     marginBottom: 15,
     borderBottom: "1px solid #30363d",
     paddingBottom: 10,
+  },
+
+  footer: {
+  position: "fixed",
+  bottom: 0,
+  left: 290,
+  width: "66%",
+  height: 50,
+  background: "#0d1117",
+  borderTop: "1px solid purple",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "0 20px",
+  fontSize: 14,
+  color: "#8b949e",
+  },
+
+  footerLeft: {
+  },
+
+  footerRight: {
+    display: "flex",
+    gap: 15,
+  },
+
+  footerLink: {
+    cursor: "pointer",
   },
 };
