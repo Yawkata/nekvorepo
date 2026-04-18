@@ -121,6 +121,76 @@ class TestApproveCommitSuccess:
         db_session.expire_all()
         assert db_session.get(Draft, editing_draft.id).status == DraftStatus.needs_rebase
 
+    def test_stale_drafts_base_commit_hash_unchanged_after_needs_rebase(
+        self, client, mock_identity_client, mock_repo_client, auth_headers,
+        make_repo, make_draft, make_commit, db_session,
+    ):
+        """
+        Approving a commit must NOT overwrite base_commit_hash on drafts that are
+        marked needs_rebase.  The original base is the three-way diff anchor for the
+        rebase flow; clobbering it with the new HEAD hash makes every file appear
+        unchanged and silently skips all conflict detection.
+
+        Regression test for: UPDATE drafts SET status='needs_rebase', base_commit_hash=:h
+        Correct behaviour:   UPDATE drafts SET status='needs_rebase'   -- hash untouched
+        """
+        mock_identity_client.return_value = "reviewer"
+        repo = make_repo()
+
+        # prior_commit is what the editing draft was based on — this must survive
+        prior_commit = make_commit(
+            repo_id=repo.id, owner_id=_AUTHOR_ID, status=CommitStatus.approved,
+            commit_summary="Prior approved commit",
+        )
+        editing_draft = make_draft(
+            repo_id=repo.id,
+            user_id="editor",
+            status=DraftStatus.editing,
+            base_commit_hash=prior_commit.commit_hash,  # real, non-null base
+        )
+
+        # A new commit arrives and gets approved — draft must become needs_rebase
+        new_commit = make_commit(
+            repo_id=repo.id, owner_id=_AUTHOR_ID,
+            parent_commit_hash=prior_commit.commit_hash,
+        )
+        client.post(_url(repo.id, new_commit.commit_hash), headers=auth_headers(user_id=_REVIEWER_ID))
+
+        db_session.expire_all()
+        updated = db_session.get(Draft, editing_draft.id)
+
+        assert updated.status == DraftStatus.needs_rebase
+        assert updated.base_commit_hash == prior_commit.commit_hash, (
+            "base_commit_hash must remain the original base after needs_rebase — "
+            f"got {updated.base_commit_hash!r}, expected {prior_commit.commit_hash!r}"
+        )
+
+    def test_stale_drafts_null_base_commit_hash_stays_null_after_needs_rebase(
+        self, client, mock_identity_client, mock_repo_client, auth_headers,
+        make_repo, make_draft, make_commit, db_session,
+    ):
+        """
+        Edge case: draft with base_commit_hash=NULL must remain NULL (not be set
+        to the new HEAD hash) after being marked needs_rebase.
+        """
+        mock_identity_client.return_value = "reviewer"
+        repo = make_repo()
+        editing_draft = make_draft(
+            repo_id=repo.id, user_id="editor",
+            status=DraftStatus.editing, base_commit_hash=None,
+        )
+        commit = make_commit(repo_id=repo.id, owner_id=_AUTHOR_ID)
+        client.post(_url(repo.id, commit.commit_hash), headers=auth_headers(user_id=_REVIEWER_ID))
+
+        db_session.expire_all()
+        updated = db_session.get(Draft, editing_draft.id)
+
+        assert updated.status == DraftStatus.needs_rebase
+        assert updated.base_commit_hash is None, (
+            "base_commit_hash=NULL must stay NULL after needs_rebase — "
+            f"got {updated.base_commit_hash!r}"
+        )
+
     def test_approved_draft_marked_approved(self, client, mock_identity_client, mock_repo_client, auth_headers, make_repo, make_draft, make_commit, db_session):
         mock_identity_client.return_value = "reviewer"
         repo = make_repo()
