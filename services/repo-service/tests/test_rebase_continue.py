@@ -74,8 +74,11 @@ def _url(repo_id, draft_id):
     return _URL.format(repo_id=repo_id, draft_id=draft_id)
 
 
-def _body(expected_head_commit_hash: str):
-    return {"expected_head_commit_hash": expected_head_commit_hash}
+def _body(expected_head_commit_hash: str, resolutions: list | None = None):
+    body: dict = {"expected_head_commit_hash": expected_head_commit_hash}
+    if resolutions is not None:
+        body["resolutions"] = resolutions
+    return body
 
 
 def _setup_rebase_scenario(
@@ -429,9 +432,10 @@ class TestRebaseContinueEFSRebuild:
     ):
         """
         When the same path exists in both the HEAD tree and the author's draft,
-        the draft's version must win (draft overlay takes precedence over HEAD blob).
+        the draft's version must win when the author resolves with 'keep_mine'.
 
-        This represents a resolved conflict: the author chose their version.
+        Base tree is empty, HEAD has a.txt, draft has a.txt with different content
+        → classifies as 'conflict'.  Author sends resolution keep_mine → draft wins.
         """
         # HEAD has a.txt with _CONTENT_HEAD_A
         repo, draft, _, head_commit = _setup_efs_rebase_scenario(
@@ -440,12 +444,15 @@ class TestRebaseContinueEFSRebuild:
         )
         mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
 
-        # Author has a.txt in EFS with their own content (resolved or Category 1A)
+        # Author has a.txt in EFS with their own content — this is a conflict
         seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
 
         r = client.post(
             _url(repo.id, draft.id),
-            json=_body(head_commit.commit_hash),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "a.txt", "resolution": "keep_mine"}],
+            ),
             headers=auth_headers(),
         )
         assert r.status_code == 200
@@ -454,7 +461,7 @@ class TestRebaseContinueEFSRebuild:
             Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id) / "a.txt"
         )
         assert efs_file.read_bytes() == _CONTENT_DRAFT_A, (
-            "Draft version must override HEAD blob when both exist at the same path"
+            "Draft version must win when author resolves conflict with keep_mine"
         )
 
     def test_draft_only_file_survives_efs_rebuild(
@@ -464,29 +471,37 @@ class TestRebaseContinueEFSRebuild:
     ):
         """
         A file the author added to the draft that does not exist in the HEAD
-        tree (Category 1A — no conflict) must still be present in EFS after
-        the rebuild.  The wipe-and-restore must not silently drop author additions.
+        tree (Category 1A — no_conflict, has_draft_changes=True) must still be
+        present in EFS after the rebuild.
+
+        Also seeds a.txt in both HEAD and draft (conflict) to confirm that
+        resolving a conflict does not affect unrelated draft-only files.
         """
-        # HEAD tree has only a.txt; draft also has c.txt (author addition)
+        # HEAD tree has only a.txt; draft also has c.txt (author addition, no conflict)
         repo, draft, _, head_commit = _setup_efs_rebase_scenario(
             make_repo, make_tree, make_commit, make_draft, advance_repo_head,
             head_blobs={"a.txt": _HASH_HEAD_A},
         )
         mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
 
+        # a.txt is in both HEAD and draft (different content) → conflict
         seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+        # c.txt is draft-only → no_conflict sub-case A (auto-kept)
         seed_file(_OWNER_ID, str(repo.id), str(draft.id), "c.txt", _CONTENT_DRAFT_C)
 
         r = client.post(
             _url(repo.id, draft.id),
-            json=_body(head_commit.commit_hash),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "a.txt", "resolution": "keep_mine"}],
+            ),
             headers=auth_headers(),
         )
         assert r.status_code == 200
 
         draft_root = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id)
         assert (draft_root / "c.txt").exists(), (
-            "Draft-only file (Category 1A) must survive the EFS rebuild"
+            "Draft-only file (Category 1A — no_conflict) must survive the EFS rebuild"
         )
         assert (draft_root / "c.txt").read_bytes() == _CONTENT_DRAFT_C
 
@@ -988,6 +1003,372 @@ class TestRebaseContinueAuth:
             headers=auth_headers(expired=True),
         )
         assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Missing / invalid resolutions (Bug 5 — blind overlay → reclassify + validate)
+# ---------------------------------------------------------------------------
+
+class TestRebaseContinueMissingResolutions:
+    """
+    When the author submits /rebase without providing a resolution for every
+    path that requires one, the endpoint must return 422 with a structured
+    error body naming the missing paths.
+
+    Required-resolution categories:
+      - conflict               (both sides changed, differently)
+      - deleted_in_head 4B     (deleted in HEAD, but draft modified it)
+      - type_collision root    (one entry per collision group)
+
+    The old "blind overlay" never validated resolutions — it silently applied
+    whatever it found, producing incorrect state or a 500 on type collisions.
+    """
+
+    def test_conflict_without_resolution_returns_422(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        """
+        HEAD and draft both have a.txt with different content (conflict).
+        Submitting /rebase without a resolution must return 422.
+        """
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A},
+        )
+        mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),  # no resolutions
+            headers=auth_headers(),
+        )
+        assert r.status_code == 422
+
+    def test_conflict_without_resolution_error_code(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A},
+        )
+        mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),
+            headers=auth_headers(),
+        )
+        assert r.json()["detail"]["error"] == "missing_resolutions"
+
+    def test_conflict_without_resolution_lists_path(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        """The 422 detail must list every path that still needs a resolution."""
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A},
+        )
+        mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),
+            headers=auth_headers(),
+        )
+        assert "a.txt" in r.json()["detail"]["paths"]
+
+    def test_partial_resolutions_still_returns_422(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        """
+        Two conflict paths: resolution provided for only one → 422 listing the other.
+        """
+        content_b = b"draft version of b.txt"
+        hash_b = hashlib.sha256(content_b).hexdigest()
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A, "b.txt": _HASH_HEAD_B},
+        )
+        mock_storage_manager.download_blob.side_effect = (
+            lambda h: _CONTENT_HEAD_A if h == _HASH_HEAD_A else _CONTENT_HEAD_B
+        )
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "b.txt", content_b)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            # only resolves a.txt, not b.txt
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "a.txt", "resolution": "keep_mine"}],
+            ),
+            headers=auth_headers(),
+        )
+        assert r.status_code == 422
+        assert "b.txt" in r.json()["detail"]["paths"]
+        assert "a.txt" not in r.json()["detail"]["paths"]
+
+    def test_use_theirs_resolution_uses_head_content(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file, tmp_efs,
+    ):
+        """
+        Conflict resolved with use_theirs → HEAD version is written to EFS.
+        """
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A},
+        )
+        mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "a.txt", "resolution": "use_theirs"}],
+            ),
+            headers=auth_headers(),
+        )
+        assert r.status_code == 200
+        efs_file = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id) / "a.txt"
+        assert efs_file.read_bytes() == _CONTENT_HEAD_A
+
+
+# ---------------------------------------------------------------------------
+# Type collision handling (Bug 5 — file-vs-directory ambiguity)
+# ---------------------------------------------------------------------------
+
+class TestRebaseContinueTypeCollision:
+    """
+    A type collision occurs when one side uses a path as a plain file while the
+    other uses the same path as a directory prefix.
+
+    Example: draft has 'lib' (file), HEAD has 'lib/core.py' → collision at 'lib'.
+
+    The old blind overlay tried to write both, triggering IsADirectoryError (500).
+    The new endpoint detects collisions, requires an explicit resolution for the
+    collision root, and applies it consistently before touching EFS.
+    """
+
+    def test_type_collision_without_resolution_returns_422(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        """
+        Draft file at 'lib', HEAD file at 'lib/core.py' → type_collision.
+        No resolution supplied → must return 422, not 500.
+        """
+        content_lib_core = b"head: lib/core.py"
+        hash_lib_core = hashlib.sha256(content_lib_core).hexdigest()
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"lib/core.py": hash_lib_core},
+        )
+        mock_storage_manager.download_blob.return_value = content_lib_core
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "lib", b"draft lib file")
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),  # no resolution for collision root
+            headers=auth_headers(),
+        )
+        assert r.status_code == 422
+
+    def test_type_collision_error_code(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file,
+    ):
+        content_lib_core = b"head: lib/core.py"
+        hash_lib_core = hashlib.sha256(content_lib_core).hexdigest()
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"lib/core.py": hash_lib_core},
+        )
+        mock_storage_manager.download_blob.return_value = content_lib_core
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "lib", b"draft lib file")
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),
+            headers=auth_headers(),
+        )
+        assert r.json()["detail"]["error"] == "missing_resolutions"
+
+    def test_type_collision_use_theirs_writes_head_subpath(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file, tmp_efs,
+    ):
+        """
+        use_theirs on the collision root → HEAD's directory side wins.
+        The draft plain file at 'lib' is discarded; HEAD's 'lib/core.py' is written.
+        """
+        content_lib_core = b"head: lib/core.py"
+        hash_lib_core = hashlib.sha256(content_lib_core).hexdigest()
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"lib/core.py": hash_lib_core},
+        )
+        mock_storage_manager.download_blob.return_value = content_lib_core
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "lib", b"draft lib file")
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "lib", "resolution": "use_theirs"}],
+            ),
+            headers=auth_headers(),
+        )
+        assert r.status_code == 200
+
+        draft_root = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id)
+        assert (draft_root / "lib" / "core.py").exists()
+        assert (draft_root / "lib" / "core.py").read_bytes() == content_lib_core
+        assert not (draft_root / "lib").is_file(), (
+            "'lib' must not remain as a plain file after use_theirs"
+        )
+
+    def test_type_collision_keep_mine_keeps_draft_file(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file, tmp_efs,
+    ):
+        """
+        keep_mine on the collision root → draft's plain file wins.
+        HEAD's directory entries under 'lib/' are discarded.
+        """
+        content_lib_core = b"head: lib/core.py"
+        hash_lib_core = hashlib.sha256(content_lib_core).hexdigest()
+        draft_lib_content = b"draft lib file"
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"lib/core.py": hash_lib_core},
+        )
+        mock_storage_manager.download_blob.return_value = content_lib_core
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "lib", draft_lib_content)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "lib", "resolution": "keep_mine"}],
+            ),
+            headers=auth_headers(),
+        )
+        assert r.status_code == 200
+
+        draft_root = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id)
+        assert (draft_root / "lib").is_file(), "'lib' must remain as a plain file"
+        assert (draft_root / "lib").read_bytes() == draft_lib_content
+        assert not (draft_root / "lib" / "core.py").exists(), (
+            "HEAD's subpath must not be written when keep_mine is chosen"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Admin EFS path correctness (Bug 4 — passport.user_id vs draft.user_id)
+# ---------------------------------------------------------------------------
+
+class TestRebaseContinueAdminEFSPath:
+    """
+    When an admin rebases a draft they don't own, the EFS path must use the
+    draft *owner's* user_id, not the admin's user_id.
+
+    The old code used `passport.user_id` (the caller's ID) for the EFS path,
+    so an admin would read/write to their own EFS namespace instead of the
+    draft owner's — producing empty snapshots and writing to the wrong location.
+    """
+
+    def test_admin_efs_files_written_to_draft_owner_path(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, tmp_efs,
+    ):
+        """
+        A HEAD blob must land at the draft OWNER's EFS path when an admin calls /rebase.
+        """
+        mock_identity_client.return_value = "admin"
+        content = b"head file content"
+        h = hashlib.sha256(content).hexdigest()
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"readme.txt": h},
+            owner_id=_OWNER_ID,
+        )
+        mock_storage_manager.download_blob.return_value = content
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),
+            headers=auth_headers(user_id=_OTHER_USER_ID),  # admin, different user
+        )
+        assert r.status_code == 200
+
+        owner_path = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id) / "readme.txt"
+        admin_path = Path(tmp_efs) / _OTHER_USER_ID / str(repo.id) / str(draft.id) / "readme.txt"
+
+        assert owner_path.exists(), "File must be at the draft owner's EFS path"
+        assert not admin_path.exists(), "File must NOT be written to the admin's EFS path"
+
+    def test_admin_draft_file_overlay_reads_from_owner_path(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+        mock_storage_manager, seed_file, tmp_efs,
+    ):
+        """
+        The draft snapshot (before wipe) must be read from the owner's EFS path.
+        If the admin's user_id were used, the snapshot would be empty and the
+        draft's conflicting file would not survive the rebase.
+        """
+        mock_identity_client.return_value = "admin"
+
+        repo, draft, _, head_commit = _setup_efs_rebase_scenario(
+            make_repo, make_tree, make_commit, make_draft, advance_repo_head,
+            head_blobs={"a.txt": _HASH_HEAD_A},
+            owner_id=_OWNER_ID,
+        )
+        mock_storage_manager.download_blob.return_value = _CONTENT_HEAD_A
+
+        # Seed the conflict file in the OWNER's EFS path
+        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "a.txt", _CONTENT_DRAFT_A)
+
+        r = client.post(
+            _url(repo.id, draft.id),
+            json=_body(
+                head_commit.commit_hash,
+                resolutions=[{"path": "a.txt", "resolution": "keep_mine"}],
+            ),
+            headers=auth_headers(user_id=_OTHER_USER_ID),  # admin caller
+        )
+        assert r.status_code == 200
+
+        # Draft file (keep_mine) must be preserved at the owner's path
+        owner_file = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id) / "a.txt"
+        assert owner_file.exists()
+        assert owner_file.read_bytes() == _CONTENT_DRAFT_A, (
+            "Admin rebase must snapshot from and write back to the draft OWNER's EFS path"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from testcontainers.postgres import PostgresContainer
 
 # ── Bootstrap env vars BEFORE any app import ────────────────────────────────
@@ -334,6 +334,9 @@ def make_tree(db_session):
     """
     Insert a RepoTreeRoot + RepoTreeEntry rows for a given {path: blob_hash} map.
     Returns the RepoTreeRoot.
+
+    Content-addressed: if two calls within the same test use identical blobs,
+    the same tree root is returned (no duplicate-key error).
     """
     import hashlib
 
@@ -343,6 +346,14 @@ def make_tree(db_session):
 
         combined = ",".join(f"{k}:{v}" for k, v in sorted(blobs.items()))
         tree_hash = hashlib.sha256(combined.encode()).hexdigest()
+
+        # Return existing root if already present (same blobs → same tree)
+        existing = db_session.exec(
+            select(RepoTreeRoot).where(RepoTreeRoot.tree_hash == tree_hash)
+        ).first()
+        if existing:
+            return existing
+
         tree_root = RepoTreeRoot(tree_hash=tree_hash)
         db_session.add(tree_root)
         db_session.commit()
@@ -381,5 +392,27 @@ def seed_file(tmp_efs):
         full_path = Path(tmp_efs) / user_id / repo_id / draft_id / path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_bytes(content)
+
+    return _seed
+
+
+@pytest.fixture
+def seed_deleted_marker(tmp_efs):
+    """
+    Returns a helper that creates a zero-byte .deleted marker in the temp EFS directory.
+
+    Usage:
+        seed_deleted_marker(user_id, repo_id, draft_id, "docs")
+        # creates {tmp_efs}/{user_id}/{repo_id}/{draft_id}/docs.deleted
+    """
+    def _seed(
+        user_id: str,
+        repo_id: str,
+        draft_id: str,
+        path: str,
+    ):
+        marker = Path(tmp_efs) / user_id / repo_id / draft_id / (path + ".deleted")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(b"")
 
     return _seed
