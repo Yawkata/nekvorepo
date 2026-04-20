@@ -1001,16 +1001,14 @@ def reconstruct_draft(
     Reopens a rejected or sibling-rejected draft by reconstructing its EFS
     directory from the S3 commit snapshot.
 
-    Phase 4 behaviour:
-      - Sets status to reconstructing immediately (second concurrent call → 409).
-      - Wipes any partial EFS content.
-      - If base_commit_hash is null (new repo, no commits yet): sets status back
-        to editing synchronously and returns.
-      - If base_commit_hash is set: S3 blob fetching is Phase 5.  The background
-        task resets status to editing immediately as a placeholder; a note field
-        indicates that actual blob restoration will be wired in Phase 5.
-
-    Phase 5 will replace the background task body with the real S3 fetch logic.
+    - Sets status to reconstructing immediately (second concurrent call → 409).
+    - Wipes any partial EFS content.
+    - If base_commit_hash is null (new repo, no commits yet): sets status back
+      to editing synchronously and returns.
+    - If base_commit_hash is set: spawns _reconstruct_task, which downloads every
+      blob from S3 via collect_blobs() + StorageManager and writes it to EFS,
+      then sets status to needs_rebase or editing depending on whether the repo
+      HEAD has advanced past base_commit_hash.
     """
     passport, role = member
     _require_author_or_admin(role)

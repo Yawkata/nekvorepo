@@ -930,13 +930,18 @@ def rebase_continue(
         for root in collision_roots
     }
 
-    # ── Download HEAD blob content from S3 ────────────────────────────────────
+    # ── Download HEAD blob content from S3 (parallel) ─────────────────────────
     from app.services.storage import StorageManager  # lazy import avoids boto3 at module load
+    from concurrent.futures import ThreadPoolExecutor
+
     storage = StorageManager()
-    head_content: dict[str, bytes] = {
-        path: storage.download_blob(blob_hash)
-        for path, blob_hash in head_blob_map.items()
-    }
+
+    def _fetch(item: tuple[str, str]) -> tuple[str, bytes]:
+        p, h = item
+        return p, storage.download_blob(h)
+
+    with ThreadPoolExecutor(max_workers=min(len(head_blob_map) or 1, 8)) as pool:
+        head_content: dict[str, bytes] = dict(pool.map(_fetch, head_blob_map.items()))
 
     # ── Build the deterministic final file state ──────────────────────────────
     final_files = _build_final_files(
