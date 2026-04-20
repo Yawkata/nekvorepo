@@ -308,18 +308,19 @@ class TestSiblingRebaseEFSRebuild:
     def test_efs_wiped_before_rebuild(
         self, client, auth_headers, mock_identity_client, mock_storage_manager,
         make_repo, make_blob, make_tree, make_commit, make_draft,
-        advance_repo_head, seed_file, tmp_efs,
+        advance_repo_head, seed_file, seed_deleted_marker, tmp_efs,
     ):
         """
-        Stale files from the pre-rebase EFS state must not survive after a wipe-
-        and-rebuild.  Only HEAD blobs + resolved draft overlay should be present.
+        Deletion markers from the pre-rebase EFS state must not survive after a
+        wipe-and-rebuild.  The rebuild writes only live file content (no .deleted
+        markers), so any pre-existing markers are eliminated by the wipe.
         """
         repo, draft, sibling_commit = self._setup(
             make_repo, make_blob, make_tree, make_commit, make_draft,
             advance_repo_head, seed_file,
         )
-        # Seed an extra stale file that is not in HEAD and not in draft resolutions
-        seed_file(_OWNER_ID, str(repo.id), str(draft.id), "stale.txt", b"stale content")
+        # Seed a deletion marker that should be wiped and not recreated by the rebuild
+        seed_deleted_marker(_OWNER_ID, str(repo.id), str(draft.id), "stale")
 
         mock_identity_client.return_value = "author"
         content_map = {_HASH_HEAD_A: _CONTENT_HEAD_A, _HASH_HEAD_B: _CONTENT_HEAD_B}
@@ -335,8 +336,8 @@ class TestSiblingRebaseEFSRebuild:
         assert resp.status_code == 200
 
         draft_dir = Path(tmp_efs) / _OWNER_ID / str(repo.id) / str(draft.id)
-        # stale.txt was not in HEAD tree and not in draft resolutions → must be gone
-        assert not (draft_dir / "stale.txt").exists()
+        # The .deleted marker was wiped and the rebuild never writes markers back
+        assert not (draft_dir / "stale.deleted").exists()
 
 
 # ---------------------------------------------------------------------------

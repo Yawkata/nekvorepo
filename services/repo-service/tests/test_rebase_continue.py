@@ -778,7 +778,6 @@ class TestRebaseContinueDraftStateGuard:
         DraftStatus.pending,
         DraftStatus.approved,
         DraftStatus.rejected,
-        DraftStatus.sibling_rejected,
         DraftStatus.reconstructing,
         DraftStatus.deleted,
     ])

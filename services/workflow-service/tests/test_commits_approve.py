@@ -149,6 +149,14 @@ class TestApproveCommitSuccess:
             base_commit_hash=prior_commit.commit_hash,  # real, non-null base
         )
 
+        # Advance repo HEAD to prior_commit so the stale check passes for new_commit
+        from shared.models.workflow import RepoHead
+        repo_head = db_session.get(RepoHead, repo.id)
+        repo_head.latest_commit_hash = prior_commit.commit_hash
+        repo_head.version += 1
+        db_session.add(repo_head)
+        db_session.commit()
+
         # A new commit arrives and gets approved — draft must become needs_rebase
         new_commit = make_commit(
             repo_id=repo.id, owner_id=_AUTHOR_ID,
