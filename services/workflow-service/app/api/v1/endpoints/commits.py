@@ -3,11 +3,12 @@ Commit lifecycle endpoints.
 
 All endpoints require membership in the target repository (via require_member).
 
-POST   /v1/repos/{repo_id}/commits                         — submit draft for review
-GET    /v1/repos/{repo_id}/commits                         — list pending commits (reviewers)
-GET    /v1/repos/{repo_id}/commits/history                 — full history: approved/rejected/sibling_rejected (any member)
-POST   /v1/repos/{repo_id}/commits/{commit_hash}/approve   — 8-step approval transaction
-POST   /v1/repos/{repo_id}/commits/{commit_hash}/reject    — reviewer rejection
+POST   /v1/repos/{repo_id}/commits                              — submit draft for review
+GET    /v1/repos/{repo_id}/commits                              — list pending commits (reviewers)
+GET    /v1/repos/{repo_id}/commits/history                      — full history (any member)
+GET    /v1/repos/{repo_id}/commits/{commit_hash}/status         — lightweight status poll (any member)
+POST   /v1/repos/{repo_id}/commits/{commit_hash}/approve        — 8-step approval transaction
+POST   /v1/repos/{repo_id}/commits/{commit_hash}/reject         — reviewer rejection
 """
 import hashlib
 import json
@@ -129,6 +130,13 @@ class CommitHistoryItem(BaseModel):
     parent_commit_hash: Optional[str]
     reviewer_comment: Optional[str]
     draft_id: Optional[uuid.UUID]
+
+
+class CommitStatusResponse(BaseModel):
+    commit_hash: str
+    status: CommitStatus
+    reviewer_comment: Optional[str]
+    timestamp: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -787,3 +795,57 @@ def reject_commit(
     )
 
     return RejectResponse(commit_hash=commit_hash, status=CommitStatus.rejected)
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/repos/{repo_id}/commits/{commit_hash}/status — lightweight poll
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{commit_hash}/status",
+    response_model=CommitStatusResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        403: {"description": "Not a repo member"},
+        404: {"description": "Commit not found in this repository"},
+    },
+    summary="Poll the current status of a single commit",
+)
+def get_commit_status(
+    repo_id: uuid.UUID,
+    commit_hash: str,
+    db: Session = Depends(deps.get_db),
+    membership: tuple[TokenData, str] = Depends(deps.require_member),
+) -> CommitStatusResponse:
+    """
+    Returns the current status, reviewer comment, and timestamp for one commit.
+
+    Intended for the reviewer diff view: the frontend polls this endpoint on a
+    30-second interval so it can display an "already resolved" banner if another
+    reviewer approved or rejected the commit while the current reviewer had the
+    diff screen open.
+
+    Any repo member may call this endpoint regardless of role.
+    """
+    commit = db.exec(
+        select(RepoCommit).where(
+            RepoCommit.commit_hash == commit_hash,
+            RepoCommit.repo_id == repo_id,
+        )
+    ).first()
+    if commit is None:
+        raise HTTPException(status_code=404, detail="Commit not found.")
+
+    log.debug(
+        "commit_status_polled",
+        commit_hash=commit_hash,
+        repo_id=str(repo_id),
+        status=commit.status.value,
+    )
+
+    return CommitStatusResponse(
+        commit_hash=commit.commit_hash,
+        status=commit.status,
+        reviewer_comment=commit.reviewer_comment,
+        timestamp=commit.timestamp,
+    )

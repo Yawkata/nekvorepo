@@ -57,6 +57,12 @@ _MODE_TO_STATUS: dict[str, DraftStatus] = {
     "sibling": DraftStatus.sibling_rejected,
 }
 
+# Both needs_rebase and sibling_rejected use identical wipe-and-rebuild logic.
+_REBASE_ELIGIBLE: frozenset[DraftStatus] = frozenset({
+    DraftStatus.needs_rebase,
+    DraftStatus.sibling_rejected,
+})
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
@@ -806,8 +812,12 @@ def rebase_continue(
     """
     Finalises the rebase flow after the author has resolved all conflicts.
 
+    Accepts drafts in 'needs_rebase' (pre-commit stale draft, Phase 7) or
+    'sibling_rejected' (post-approval sibling conflict, Phase 8).  The
+    wipe-and-rebuild logic is identical for both statuses.
+
     Steps:
-      1. Verify draft is in 'needs_rebase'.
+      1. Verify draft is in 'needs_rebase' or 'sibling_rejected'.
       2. Verify caller owns the draft (or is admin).
       3. Compare `expected_head_commit_hash` with the current repo HEAD.
          → 409 {error: head_moved_again, new_head_commit_hash} if the HEAD has
@@ -830,11 +840,11 @@ def rebase_continue(
     draft = _get_draft_or_404(db, repo_id, draft_id)
     _require_draft_access(draft, passport.user_id, role)
 
-    if draft.status != DraftStatus.needs_rebase:
+    if draft.status not in _REBASE_ELIGIBLE:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Rebase requires 'needs_rebase' status, "
+                f"Rebase requires 'needs_rebase' or 'sibling_rejected' status, "
                 f"got '{draft.status.value}'."
             ),
         )
