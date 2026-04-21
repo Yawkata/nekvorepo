@@ -161,6 +161,36 @@ class TestSiblingRebaseHappyPath:
 
         assert resp.json()["base_commit_hash"] == sibling_commit.commit_hash
 
+    def test_commit_hash_cleared_after_sibling_rebase(
+        self, client, auth_headers, mock_identity_client, mock_storage_manager,
+        make_repo, make_commit, make_draft, advance_repo_head, db_session,
+    ):
+        """
+        A sibling_rejected draft retains draft.commit_hash from when it was
+        submitted for review.  The rebase endpoint must clear it (set to NULL)
+        so the draft is in a clean state for the next submission cycle and the
+        stale sibling-rejected commit is no longer linked to the draft.
+        """
+        repo, draft, _, sibling_commit = _setup_sibling_scenario(
+            make_repo, make_commit, make_draft, advance_repo_head,
+        )
+        # Simulate the real post-submission state: the draft carries the hash of
+        # the commit that was created from it (now sibling_rejected).
+        draft.commit_hash = sibling_commit.commit_hash
+        db_session.add(draft)
+        db_session.commit()
+
+        mock_identity_client.return_value = "author"
+
+        client.post(
+            _url(repo.id, draft.id),
+            json=_body(sibling_commit.commit_hash),
+            headers=auth_headers(_OWNER_ID),
+        )
+
+        db_session.refresh(draft)
+        assert draft.commit_hash is None
+
 
 # ---------------------------------------------------------------------------
 # EFS rebuild — HEAD blobs written; draft files overlaid

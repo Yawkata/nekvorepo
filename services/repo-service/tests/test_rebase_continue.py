@@ -305,6 +305,34 @@ class TestRebaseContinueSuccess:
         updated = db_session.get(Draft, draft.id)
         assert updated.base_commit_hash == head_commit.commit_hash
 
+    def test_draft_commit_hash_cleared_in_db(
+        self, client, mock_identity_client, auth_headers,
+        make_repo, make_commit, make_draft, advance_repo_head, db_session,
+        mock_storage_manager,
+    ):
+        """
+        Rebase must set draft.commit_hash to NULL regardless of its prior value.
+        A draft may carry a stale commit_hash from a previous submission cycle
+        (e.g. sibling_rejected path); after rebase it must be disassociated from
+        that commit so the next submit creates a fresh commit row without confusion.
+        """
+        repo, draft, _, head_commit = _setup_rebase_scenario(
+            make_repo, make_commit, make_draft, advance_repo_head,
+        )
+        # Seed a non-null commit_hash to exercise the clear path
+        draft.commit_hash = head_commit.commit_hash
+        db_session.add(draft)
+        db_session.commit()
+
+        client.post(
+            _url(repo.id, draft.id),
+            json=_body(head_commit.commit_hash),
+            headers=auth_headers(),
+        )
+        db_session.expire_all()
+        updated = db_session.get(Draft, draft.id)
+        assert updated.commit_hash is None
+
     def test_idempotent_only_for_first_call(
         self, client, mock_identity_client, auth_headers,
         make_repo, make_commit, make_draft, advance_repo_head,
