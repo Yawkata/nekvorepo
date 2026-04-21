@@ -24,6 +24,19 @@ class Settings(BaseSettings):
     # Example: CORS_ORIGINS=["https://app.example.com"]
     CORS_ORIGINS: list[str] = []
 
+    # SES — sender address for invite / membership emails.  Empty = no emails sent.
+    SES_FROM_EMAIL: str = ""
+
+    # Downstream services — identity-service calls these on role change and removal.
+    WORKFLOW_SERVICE_URL: str = "http://workflow-service:8000"
+    REPO_SERVICE_URL: str = "http://repo-service:8000"
+
+    # SQS cache invalidation queue. Empty = no-op (local dev / CI).
+    SQS_CACHE_INVALIDATION_QUEUE_URL: str = ""
+
+    # Frontend base URL used to build invite accept links in emails.
+    INVITE_ACCEPT_BASE_URL: str = "http://localhost:3000"
+
     @field_validator("PASSPORT_SECRET_KEY")
     @classmethod
     def _secret_must_be_strong(cls, v: str) -> str:

@@ -28,3 +28,14 @@ class UserRepoLink(SQLModel, table=True):
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
+
+
+class User(SQLModel, table=True):
+    """Cognito sub → email mapping for member list display."""
+    __tablename__ = "users"
+
+    id: str = Field(primary_key=True)          # Cognito sub
+    email: str = Field(max_length=254, unique=True, index=True)
+    created_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+    )

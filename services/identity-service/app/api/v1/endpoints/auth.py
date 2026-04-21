@@ -1,12 +1,18 @@
+import logging
+
 from fastapi import APIRouter, Depends, Security, status
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from sqlalchemy import text
+from sqlmodel import Session
 from shared.schemas.auth import TokenData
 from shared.security import verify_passport
 from app.security.cognito import verify_cognito_token
 from app.api import deps
 from app.services.cognito import CognitoService
 from app.core.security import create_passport_token
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -47,6 +53,24 @@ class RefreshRequest(BaseModel):
     email: EmailStr  # Required for Cognito SecretHash with username_attributes=["email"]
 
 
+def _upsert_user(user_id: str, email: str, db: Session) -> None:
+    """
+    Upsert into the users table so member list queries can return email.
+    Errors are logged and swallowed — login must succeed even if this fails.
+    """
+    try:
+        db.exec(  # type: ignore[call-overload]
+            text(
+                "INSERT INTO users (id, email) VALUES (:id, :email) "
+                "ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email"
+            ).bindparams(id=user_id, email=email)
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.error("user_upsert_failed user_id=%s error=%s", user_id, exc)
+
+
 def _build_passport(user_sub: str, email: str) -> str:
     """
     Build a Passport JWT for the given user.
@@ -77,10 +101,12 @@ def confirm(payload: ConfirmRequest, cognito: CognitoService = Depends(deps.get_
 def login(
     payload: LoginRequest,
     cognito: CognitoService = Depends(deps.get_cognito),
+    db: Session = Depends(deps.get_db),
 ):
     aws_auth = cognito.login(payload.email, payload.password)
     decoded = verify_cognito_token(aws_auth["IdToken"])
     passport_jwt = _build_passport(decoded["sub"], payload.email)
+    _upsert_user(decoded["sub"], payload.email, db)
     return Token(
         access_token=passport_jwt,
         token_type="bearer",
@@ -92,6 +118,7 @@ def login(
 def refresh(
     payload: RefreshRequest,
     cognito: CognitoService = Depends(deps.get_cognito),
+    db: Session = Depends(deps.get_db),
 ):
     """
     Exchange a Cognito refresh token for a fresh Passport JWT.
@@ -102,6 +129,7 @@ def refresh(
     aws_auth = cognito.refresh_session(payload.refresh_token, payload.email)
     decoded = verify_cognito_token(aws_auth["IdToken"])
     passport_jwt = _build_passport(decoded["sub"], payload.email)
+    _upsert_user(decoded["sub"], payload.email, db)
     return Token(access_token=passport_jwt, token_type="bearer")
 
 
