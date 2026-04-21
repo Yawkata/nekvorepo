@@ -253,3 +253,30 @@ def test_ses_failure_does_not_block(client, auth_headers, make_repo, make_member
             headers=auth_headers(),
         )
     assert resp.status_code == 200
+
+
+def test_no_passport_401(client, make_repo, make_membership):
+    repo = make_repo()
+    make_membership(repo.id, _TARGET, RepoRole.reader)
+    resp = client.put(_url(repo.id), json={"role": "reviewer"})
+    assert resp.status_code == 401
+
+
+def test_no_cascade_when_author_stays_author(
+    client, auth_headers, make_repo, make_membership,
+    mock_workflow_client, mock_repo_client_identity,
+):
+    """Role 'change' that keeps author → author must not cancel commits or delete drafts."""
+    repo = make_repo()
+    make_membership(repo.id, _TARGET, RepoRole.author)
+
+    from unittest.mock import patch
+    with patch("app.api.v1.endpoints.members.send_role_changed_notification"):
+        resp = client.put(
+            _url(repo.id),
+            json={"role": "author"},
+            headers=auth_headers(),
+        )
+    assert resp.status_code == 200
+    mock_workflow_client.assert_not_called()
+    mock_repo_client_identity.assert_not_called()

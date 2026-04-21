@@ -147,7 +147,7 @@ def send_invite(
     db.commit()
     db.refresh(token)
 
-    accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/invites/{token.id}/accept"
+    accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/repos/{repo_id}/invites/{token.id}/accept"
     try:
         send_invite_notification(
             recipient_email=payload.email,
@@ -253,7 +253,7 @@ def resend_invite(
     db.commit()
     db.refresh(new_token)
 
-    accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/invites/{new_token.id}/accept"
+    accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/repos/{repo_id}/invites/{new_token.id}/accept"
     try:
         send_invite_notification(
             recipient_email=token.invited_email,
@@ -294,6 +294,8 @@ def revoke_invite(
     ).first()
     if token is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+    if token.expires_at.replace(tzinfo=timezone.utc) <= _now():
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has already expired.")
     if token.consumed_at is not None:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Cannot revoke a consumed invite.")
 

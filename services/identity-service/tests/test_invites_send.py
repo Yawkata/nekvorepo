@@ -176,3 +176,27 @@ def test_invalid_role_422(client, auth_headers, make_repo):
         headers=auth_headers(),
     )
     assert resp.status_code == 422
+
+
+def test_no_passport_401(client, make_repo):
+    repo = make_repo()
+    resp = client.post(
+        _url(repo.id),
+        json={"email": _INVITEE, "role": "reader"},
+    )
+    assert resp.status_code == 401
+
+
+def test_accept_url_contains_repo_id(client, auth_headers, make_repo):
+    """Email accept link must carry both repo_id and token_id so the frontend
+    can call POST /v1/repos/{repo_id}/invites/{token_id}/accept directly."""
+    repo = make_repo()
+    with patch("app.api.v1.endpoints.invites.send_invite_notification") as mock_ses:
+        resp = client.post(
+            _url(repo.id),
+            json={"email": _INVITEE, "role": "reader"},
+            headers=auth_headers(),
+        )
+    assert resp.status_code == 201
+    accept_url = mock_ses.call_args.kwargs["accept_url"]
+    assert str(repo.id) in accept_url

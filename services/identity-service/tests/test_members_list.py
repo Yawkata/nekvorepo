@@ -93,3 +93,9 @@ def test_reviewer_can_call(client, auth_headers, make_repo, make_membership):
     make_membership(repo.id, reviewer_id, RepoRole.reviewer)
     resp = client.get(_url(repo.id), headers=auth_headers(user_id=reviewer_id))
     assert resp.status_code == 200
+
+
+def test_no_passport_401(client, make_repo):
+    repo = make_repo()
+    resp = client.get(_url(repo.id))
+    assert resp.status_code == 401

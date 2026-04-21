@@ -23,6 +23,8 @@ permissions:
 env:
   TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
   TF_VAR_allowed_ips: ${{ secrets.TF_VAR_ALLOWED_IPS }}
+  TF_VAR_ses_sender_email: ${{ secrets.TF_VAR_SES_SENDER_EMAIL }}
+  TF_VAR_frontend_url: ${{ secrets.TF_VAR_FRONTEND_URL }}
   AWS_REGION: "us-east-1"
 
 jobs:
@@ -125,6 +127,9 @@ jobs:
           push_param "dev_secret_access_key" "$(echo "$OUTPUTS" | jq -r '.dev_secret_access_key.value')" "SecureString"
           push_param "s3_bucket_name"        "$(echo "$OUTPUTS" | jq -r '.s3_bucket_name.value')"        "String"
           push_param "rds_endpoint"          "$(echo "$OUTPUTS" | jq -r '.rds_endpoint.value')"          "String"
+          push_param "sqs_cache_invalidation_queue_url" "$(echo "$OUTPUTS" | jq -r '.sqs_cache_invalidation_queue_url.value')" "String"
+          push_param "ses_sender_email"      "$(echo "$OUTPUTS" | jq -r '.ses_sender_email.value')"      "String"
+          push_param "frontend_url"          "$(echo "$OUTPUTS" | jq -r '.frontend_url.value')"          "String"
 
       - name: Terraform Destroy
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'

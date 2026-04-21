@@ -86,3 +86,21 @@ def test_requires_admin_403(client, auth_headers, make_repo, make_membership, ma
     token = make_invite_token(repo.id)
     resp = client.post(_url(repo.id, token.id), headers=auth_headers(user_id=reader_id))
     assert resp.status_code == 403
+
+
+def test_no_passport_401(client, make_repo, make_invite_token):
+    repo = make_repo()
+    token = make_invite_token(repo.id)
+    resp = client.post(_url(repo.id, token.id))
+    assert resp.status_code == 401
+
+
+def test_accept_url_contains_repo_id(client, auth_headers, make_repo, make_invite_token):
+    """Resent invite link must also carry repo_id for the frontend."""
+    repo = make_repo()
+    token = make_invite_token(repo.id, invited_email="user@example.com")
+    with patch("app.api.v1.endpoints.invites.send_invite_notification") as mock_ses:
+        resp = client.post(_url(repo.id, token.id), headers=auth_headers())
+    assert resp.status_code == 200
+    accept_url = mock_ses.call_args.kwargs["accept_url"]
+    assert str(repo.id) in accept_url

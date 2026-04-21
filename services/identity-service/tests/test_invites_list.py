@@ -51,3 +51,15 @@ def test_response_fields_shape(client, auth_headers, make_repo, make_invite_toke
     assert "role" in item
     assert "expires_at" in item
     assert "created_at" in item
+
+
+def test_no_passport_401(client, make_repo):
+    repo = make_repo()
+    resp = client.get(_url(repo.id))
+    assert resp.status_code == 401
+
+
+def test_repo_not_found_404(client, auth_headers):
+    import uuid
+    resp = client.get(_url(uuid.uuid4()), headers=auth_headers())
+    assert resp.status_code == 404

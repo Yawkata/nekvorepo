@@ -201,3 +201,10 @@ def test_cascade_failure_does_not_block(client, auth_headers, make_repo, make_me
          patch("app.api.v1.endpoints.members.send_removed_notification"):
         resp = client.delete(_url(repo.id), headers=auth_headers())
     assert resp.status_code == 204
+
+
+def test_no_passport_401(client, make_repo, make_membership):
+    repo = make_repo()
+    make_membership(repo.id, _TARGET, RepoRole.reader)
+    resp = client.delete(_url(repo.id))
+    assert resp.status_code == 401

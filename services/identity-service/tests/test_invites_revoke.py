@@ -67,3 +67,19 @@ def test_requires_admin_403(client, auth_headers, make_repo, make_membership, ma
     token = make_invite_token(repo.id)
     resp = client.post(_url(repo.id, token.id), headers=auth_headers(user_id=reader_id))
     assert resp.status_code == 403
+
+
+def test_no_passport_401(client, make_repo, make_invite_token):
+    repo = make_repo()
+    token = make_invite_token(repo.id)
+    resp = client.post(_url(repo.id, token.id))
+    assert resp.status_code == 401
+
+
+def test_already_expired_410(client, auth_headers, make_repo, make_invite_token):
+    """Revoking an already-expired token should return 410, not silently succeed."""
+    repo = make_repo()
+    token = make_invite_token(repo.id, hours=-1)
+    resp = client.post(_url(repo.id, token.id), headers=auth_headers())
+    assert resp.status_code == 410
+    assert "expired" in resp.json()["detail"]
