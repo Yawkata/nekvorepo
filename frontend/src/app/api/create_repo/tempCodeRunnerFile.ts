@@ -1,1 +1,0 @@
-const authHeader = req.headers.get("authorization");

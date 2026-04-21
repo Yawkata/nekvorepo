@@ -2,23 +2,41 @@
 
 import { CSSProperties } from "react";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 export default function HomePage() {
+  const router = useRouter();
   const [repos, setRepos] = useState<any[]>([]);
 
   useEffect(() => {
-  const stored = localStorage.getItem("repos");
-  if (stored) {
-    setRepos(JSON.parse(stored));
-  }
-  }, []);
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    fetch("/api/repos", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (res.status === 401) {
+          router.push("/login");
+          return null;
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (data) setRepos(data);
+      })
+      .catch(() => {});
+  }, [router]);
   return (
     <div style={styles.container}>
       
       {/* PURPLE NAVBAR */}
       <div style={styles.navbar}>
-        <h3>VSChrono</h3>
+        <h3>ChronoVS</h3>
         <div style={styles.avatar} />
       </div>
 
@@ -44,14 +62,18 @@ export default function HomePage() {
           </div>
 
           {/* SHOW REPOS */}
-          {repos.map((repo) => (
-              <Link key={repo.repo_id} href={`/repo/${repo.repo_id}`}>
+          {repos.map((repo) => {
+            const id = repo.repo_id ?? repo.id;
+            if (!id) return null;
+            return (
+              <Link key={id} href={`/repo/${id}`}>
                 <div style={styles.card}>
                   <h3>{repo.repo_name}</h3>
                   <p style={{ color: "#8b949e" }}>{repo.description}</p>
                 </div>
               </Link>
-            ))}
+            );
+          })}
 
           {/* FOOTER */}
         <div style={styles.footer}>

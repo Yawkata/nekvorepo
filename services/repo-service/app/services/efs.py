@@ -249,6 +249,17 @@ class EFSService:
         draft = self.draft_dir(user_id, repo_id, draft_id)
         target = _resolve_safe(draft, rel_path)
 
+        # A directory already sits at this exact path — writing bytes over a
+        # directory is impossible.  Raising ValueError maps to HTTP 400 with a
+        # readable message instead of bubbling up as a generic 500.  This is
+        # especially easy to hit on Windows/macOS case-insensitive bind mounts
+        # used in local dev (e.g. saving "Test" when "test/" already exists).
+        if target.is_dir():
+            raise ValueError(
+                f"A folder named '{rel_path}' already exists in this draft. "
+                "Choose a different file name or delete the folder first."
+            )
+
         # If any ancestor path component exists as a plain file, physically
         # remove it before calling mkdir.  This occurs when a file (e.g. "lib")
         # was previously marked deleted via mark_deleted() and the author now

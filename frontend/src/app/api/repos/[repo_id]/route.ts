@@ -2,13 +2,14 @@ import { NextResponse } from "next/server";
 
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ repo_id: string }> }
 ) {
   const authHeader = req.headers.get("authorization");
+  const { repo_id } = await params;
 
   try {
     const response = await fetch(
-      `http://localhost:8001/v1/repos/${params.id}`, // ✅ uses ID now
+      `http://localhost:8001/v1/repos/${repo_id}`,
       {
         headers: {
           Authorization: authHeader || "",
@@ -18,12 +19,10 @@ export async function GET(
 
     const data = await response.json();
 
-    return NextResponse.json(data, {
-      status: response.status,
-    });
-  } catch (err) {
+    return NextResponse.json(data, { status: response.status });
+  } catch {
     return NextResponse.json(
-      { error: "Failed to fetch repo" },
+      { error: "Failed to connect to backend" },
       { status: 500 }
     );
   }

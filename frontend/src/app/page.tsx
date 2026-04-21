@@ -93,7 +93,7 @@ export default function Page() {
     if (res.ok) {
       router.push(`/temp_code?email=${encodeURIComponent(email)}`);
     } else {
-      alert(data.message || "Signup failed");
+      alert(data.detail || data.error || "Signup failed");
     }
   }
   return (

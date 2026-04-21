@@ -89,9 +89,11 @@ export default function Page() {
 
     if (res.ok) {
       localStorage.setItem("token", data.access_token);
+      localStorage.setItem("refresh_token", data.refresh_token ?? "");
+      localStorage.setItem("email", email);
       router.push("/homepage");
     } else {
-      alert(data.message || "Login failed");
+      alert(data.detail || data.error || "Login failed");
     }
   }
 

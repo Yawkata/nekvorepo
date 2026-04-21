@@ -12,7 +12,7 @@ export default function CreateRepoPage() {
   async function handleCreate() {
   const token = localStorage.getItem("token"); // or wherever you store it
 
-  const res = await fetch("/api/create_repo", {
+  const res = await fetch("/api/repos", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
