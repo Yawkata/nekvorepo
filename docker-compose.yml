@@ -48,6 +48,14 @@ services:
       # Falls back to DATABASE_URL so the stack still works before init-db-roles
       # has been run (e.g. on a first pull without per-service users created yet).
       - DATABASE_URL=${IDENTITY_DATABASE_URL:-${DATABASE_URL}}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - SES_FROM_EMAIL=${SES_FROM_EMAIL:-}
+      - WORKFLOW_SERVICE_URL=http://workflow-service:8000
+      - REPO_SERVICE_URL=http://repo-service:8000
+      - SQS_CACHE_INVALIDATION_QUEUE_URL=${SQS_CACHE_INVALIDATION_QUEUE_URL:-}
+      - INVITE_ACCEPT_BASE_URL=${INVITE_ACCEPT_BASE_URL:-http://localhost:3000}
     depends_on:
       database-migrations:
         condition: service_completed_successfully
@@ -79,6 +87,7 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_REPO_BUCKET=${S3_REPO_BUCKET}
       - SES_FROM_EMAIL=${SES_FROM_EMAIL}
+      - SQS_CACHE_INVALIDATION_QUEUE_URL=${SQS_CACHE_INVALIDATION_QUEUE_URL:-}
     depends_on:
       database-migrations:
         condition: service_completed_successfully
@@ -113,6 +122,7 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_REPO_BUCKET=${S3_REPO_BUCKET}
       - SES_FROM_EMAIL=${SES_FROM_EMAIL}
+      - SQS_CACHE_INVALIDATION_QUEUE_URL=${SQS_CACHE_INVALIDATION_QUEUE_URL:-}
       # EFS_DRAFTS_ROOT defaults to /mnt/efs/drafts inside the container.
       # Local:      host directory bind-mounted below for easy inspection.
       # Production: EFS CSI driver mounts at the same path — no code change needed.

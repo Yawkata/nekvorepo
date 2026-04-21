@@ -32,7 +32,7 @@ os.environ.setdefault("AWS_REGION",           "us-east-1")
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
@@ -42,8 +42,9 @@ from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
 from shared.constants import RepoRole
-from shared.models.identity import UserRepoLink
+from shared.models.identity import UserRepoLink, User
 from shared.models.workflow import RepoHead
+from shared.models.invite import InviteToken
 
 
 # ── Session-scoped database container ────────────────────────────────────────
@@ -85,7 +86,7 @@ def truncate_tables(db_engine):
         # CASCADE handles invite_tokens.repo_id → repo_heads and
         # drafts.repo_id → repo_heads, etc.
         conn.execute(text(
-            "TRUNCATE repo_heads, user_repo_links RESTART IDENTITY CASCADE"
+            "TRUNCATE repo_heads, user_repo_links, users RESTART IDENTITY CASCADE"
         ))
         conn.commit()
 
@@ -209,3 +210,65 @@ def make_membership(db_session):
         return link
 
     return _make
+
+
+@pytest.fixture
+def make_user(db_session):
+    """Seed a User row (Cognito sub → email mapping)."""
+    def _make(user_id: str = _TEST_USER_ID, email: str = _TEST_EMAIL) -> User:
+        u = User(id=user_id, email=email)
+        db_session.add(u)
+        db_session.commit()
+        db_session.refresh(u)
+        return u
+    return _make
+
+
+@pytest.fixture
+def make_invite_token(db_session):
+    """Seed an InviteToken row."""
+    def _make(
+        repo_id: uuid.UUID,
+        invited_email: str = "invitee@example.com",
+        role: RepoRole = RepoRole.reader,
+        hours: int = 72,
+        consumed: bool = False,
+    ) -> InviteToken:
+        token = InviteToken(
+            repo_id=repo_id,
+            invited_email=invited_email,
+            role=role,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=hours),
+            consumed_at=datetime.now(timezone.utc) if consumed else None,
+        )
+        db_session.add(token)
+        db_session.commit()
+        db_session.refresh(token)
+        return token
+    return _make
+
+
+@pytest.fixture
+def mock_workflow_client():
+    with patch("app.services.workflow_client.cancel_member_commits") as m:
+        yield m
+
+
+@pytest.fixture
+def mock_repo_client_identity():
+    with patch("app.services.repo_client.delete_member_drafts") as m:
+        yield m
+
+
+@pytest.fixture
+def mock_ses_identity():
+    with patch("app.services.notifications.send_invite_notification") as i, \
+         patch("app.services.notifications.send_role_changed_notification") as r, \
+         patch("app.services.notifications.send_removed_notification") as rm:
+        yield i, r, rm
+
+
+@pytest.fixture
+def mock_sqs_identity():
+    with patch("app.services.sqs.publish_cache_invalidation") as m:
+        yield m

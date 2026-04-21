@@ -148,13 +148,16 @@ def send_invite(
     db.refresh(token)
 
     accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/invites/{token.id}/accept"
-    send_invite_notification(
-        recipient_email=payload.email,
-        repo_name=repo.repo_name,
-        role=payload.role.value,
-        accept_url=accept_url,
-        from_email=settings.SES_FROM_EMAIL,
-    )
+    try:
+        send_invite_notification(
+            recipient_email=payload.email,
+            repo_name=repo.repo_name,
+            role=payload.role.value,
+            accept_url=accept_url,
+            from_email=settings.SES_FROM_EMAIL,
+        )
+    except Exception as exc:
+        log.error("invite_ses_failed", error=str(exc))
 
     log.info("invite_sent", repo_id=str(repo_id), invited_email=payload.email, role=payload.role.value)
     return InviteResponse(
@@ -251,13 +254,16 @@ def resend_invite(
     db.refresh(new_token)
 
     accept_url = f"{settings.INVITE_ACCEPT_BASE_URL}/invites/{new_token.id}/accept"
-    send_invite_notification(
-        recipient_email=token.invited_email,
-        repo_name=repo.repo_name,
-        role=token.role.value,
-        accept_url=accept_url,
-        from_email=settings.SES_FROM_EMAIL,
-    )
+    try:
+        send_invite_notification(
+            recipient_email=token.invited_email,
+            repo_name=repo.repo_name,
+            role=token.role.value,
+            accept_url=accept_url,
+            from_email=settings.SES_FROM_EMAIL,
+        )
+    except Exception as exc:
+        log.error("resend_ses_failed", error=str(exc))
 
     log.info("invite_resent", repo_id=str(repo_id), new_token_id=str(new_token.id))
     return ResendResponse(token_id=new_token.id, expires_at=new_token.expires_at)
@@ -346,7 +352,7 @@ def accept_invite(
         text(
             "UPDATE invite_tokens SET consumed_at = NOW() "
             "WHERE id = :id AND repo_id = :repo_id AND consumed_at IS NULL"
-        ).bindparams(id=str(token_id), repo_id=str(repo_id))
+        ).bindparams(id=token_id, repo_id=repo_id)
     )
     db.commit()
     if result.rowcount == 0:

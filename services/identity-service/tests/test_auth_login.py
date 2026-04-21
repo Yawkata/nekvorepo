@@ -148,3 +148,34 @@ class TestLoginValidation:
     def test_cognito_not_called_on_validation_failure(self, client, mock_cognito):
         client.post(_URL, json={"email": "bad"})
         mock_cognito.login.assert_not_called()
+
+
+class TestLoginUpsertUsers:
+    """Phase 9: login must upsert the caller into the users table."""
+
+    def _login(self, client, mock_cognito, sub="login-upsert-sub"):
+        mock_cognito.login.return_value = {"IdToken": _FAKE_ID_TOKEN, "RefreshToken": "rt"}
+        with patch(_PATCH) as mv:
+            mv.return_value = {"sub": sub}
+            return client.post(_URL, json=_CREDS)
+
+    def test_login_upserts_users_table(self, client, mock_cognito, db_session):
+        from sqlmodel import select
+        from shared.models.identity import User
+
+        resp = self._login(client, mock_cognito, sub="upsert-sub-1")
+        assert resp.status_code == 200
+
+        user = db_session.exec(select(User).where(User.id == "upsert-sub-1")).first()
+        assert user is not None
+        assert user.email == "alice@example.com"
+
+    def test_login_upsert_idempotent(self, client, mock_cognito, db_session):
+        from sqlmodel import select
+        from shared.models.identity import User
+
+        self._login(client, mock_cognito, sub="idem-sub")
+        self._login(client, mock_cognito, sub="idem-sub")
+
+        users = db_session.exec(select(User).where(User.id == "idem-sub")).all()
+        assert len(users) == 1

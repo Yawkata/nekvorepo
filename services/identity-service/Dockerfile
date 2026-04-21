@@ -16,7 +16,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=services/identity-service/uv.lock,target=uv.lock \
     uv sync --frozen --no-install-project --no-dev && \
     find .venv/lib/python3.13/site-packages/botocore/data -mindepth 1 -maxdepth 1 \
-        -not -name 'cognito-idp' -not -name 's3' -not -name '*.json' \
+        -not -name 'cognito-idp' \
+        -not -name 'ses' \
+        -not -name 'sqs' \
+        -not -name '*.json' \
         -exec rm -rf {} +
 
 # Stage 2: Runtime

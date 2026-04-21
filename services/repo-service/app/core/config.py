@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # Must be a SES-verified address or domain to send in production.
     SES_FROM_EMAIL: str = ""
 
+    # SQS queue for cross-pod role-cache invalidation on member removal.
+    # Leave empty to disable (default — no-op in local dev / CI).
+    SQS_CACHE_INVALIDATION_QUEUE_URL: str = ""
+    AWS_REGION: str = "us-east-1"
+
     # CORS — empty list = no CORS (secure default). Set per-environment.
     CORS_ORIGINS: list[str] = []
 

@@ -2,6 +2,7 @@ import uuid
 import time
 import urllib.request
 import structlog
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,6 +15,27 @@ from app.core.config import settings
 
 configure_logging("identity-service")
 log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan — startup and shutdown hooks
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.services import workflow_client, repo_client
+    workflow_client.setup(settings.WORKFLOW_SERVICE_URL)
+    repo_client.setup(settings.REPO_SERVICE_URL)
+    log.info(
+        "identity_service_started",
+        workflow_url=settings.WORKFLOW_SERVICE_URL,
+        repo_url=settings.REPO_SERVICE_URL,
+    )
+    yield
+    workflow_client.teardown()
+    repo_client.teardown()
+    log.info("identity_service_stopped")
+
 
 # ---------------------------------------------------------------------------
 # App
@@ -46,6 +68,7 @@ app = FastAPI(
         {"name": "ops", "description": "Kubernetes liveness and readiness probes."},
     ],
     swagger_ui_parameters={"persistAuthorization": True},
+    lifespan=lifespan,
 )
 
 # CORS — restricted to configured origins; expose correlation ID header to JS

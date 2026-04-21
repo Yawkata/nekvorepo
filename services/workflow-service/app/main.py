@@ -1,7 +1,9 @@
+import json
 import threading
 import uuid
 import time
 from contextlib import asynccontextmanager
+import boto3
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,7 @@ log = structlog.get_logger()
 
 _SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
 _SWEEP_STALE_MINUTES = 5
+_SQS_POLL_WAIT = 20  # AWS long-poll max
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +65,35 @@ def _committing_sweep() -> None:
             log.error("committing_sweep_error", error=str(exc))
 
 
+def _sqs_cache_invalidation_consumer() -> None:
+    """
+    Daemon thread: long-polls the SQS cache-invalidation queue and evicts
+    stale role-cache entries whenever a member is removed.
+    No-op (exits immediately) if SQS_CACHE_INVALIDATION_QUEUE_URL is empty.
+    """
+    queue_url = settings.SQS_CACHE_INVALIDATION_QUEUE_URL
+    if not queue_url:
+        return
+    sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
+    while True:
+        try:
+            resp = sqs.receive_message(
+                QueueUrl=queue_url,
+                MaxNumberOfMessages=10,
+                WaitTimeSeconds=_SQS_POLL_WAIT,
+            )
+            for msg in resp.get("Messages", []):
+                try:
+                    body = json.loads(msg["Body"])
+                    identity_client.invalidate(body["repo_id"], body["user_id"])
+                    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
+                except Exception as exc:
+                    log.error("sqs_message_error", error=str(exc))
+        except Exception as exc:
+            log.error("sqs_consumer_error", error=str(exc))
+            time.sleep(5)
+
+
 # ---------------------------------------------------------------------------
 # Lifespan — startup and shutdown hooks
 # ---------------------------------------------------------------------------
@@ -75,6 +107,10 @@ async def lifespan(app: FastAPI):
     # Start background sweep for stuck committing drafts
     sweep_thread = threading.Thread(target=_committing_sweep, daemon=True, name="committing-sweep")
     sweep_thread.start()
+
+    # Start SQS cache-invalidation consumer (no-op if queue URL not configured)
+    sqs_thread = threading.Thread(target=_sqs_cache_invalidation_consumer, daemon=True, name="sqs-cache-invalidation")
+    sqs_thread.start()
 
     log.info(
         "workflow_service_started",
