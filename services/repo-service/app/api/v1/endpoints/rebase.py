@@ -973,6 +973,7 @@ def rebase_continue(
 
     # ── Advance draft state ───────────────────────────────────────────────────
     draft.base_commit_hash = repo.latest_commit_hash
+    draft.commit_hash = None   # disassociate from the sibling-rejected commit
     draft.status = DraftStatus.editing
     db.add(draft)
     db.commit()
