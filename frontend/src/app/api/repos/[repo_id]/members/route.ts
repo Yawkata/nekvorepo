@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
 
-const IDENTITY_URL =
-  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
-
-
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ repo_id: string }> }
@@ -13,7 +9,7 @@ export async function GET(
 
   try {
     const response = await fetch(
-      `${IDENTITY_URL}/v1/repos/${repo_id}`,
+      `http://localhost:8001/v1/repos/${repo_id}/members`,
       {
         headers: {
           Authorization: authHeader || "",
@@ -21,7 +17,13 @@ export async function GET(
       }
     );
 
-    const data = await response.json();
+    const text = await response.text();
+    let data: unknown = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { error: text };
+    }
 
     return NextResponse.json(data, { status: response.status });
   } catch {

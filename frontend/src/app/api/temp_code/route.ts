@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 
+const IDENTITY_URL =
+  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
+
+
 export async function POST(req: Request) {
   const body = await req.json();
 
   try {
     const response = await fetch(
-      "http://localhost:8001/v1/auth/confirm",
+      `${IDENTITY_URL}/v1/auth/confirm`,
       {
         method: "POST",
         headers: {
