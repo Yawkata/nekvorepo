@@ -12,7 +12,6 @@ Accept requires any valid JWT — the caller's email must match the invited_emai
 """
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Security, status
@@ -349,11 +348,15 @@ def accept_invite(
             detail="This invite was not sent to your email address.",
         )
 
-    # Atomically set consumed_at — race-safe via raw SQL rowcount check
+    # Atomically set consumed_at — race-safe via raw SQL rowcount check.
+    # The WHERE clause re-validates both consumed_at and expiry so that a
+    # token expiring between the Python guard above and this UPDATE cannot
+    # be silently accepted.
     result = db.exec(  # type: ignore[call-overload]
         text(
             "UPDATE invite_tokens SET consumed_at = NOW() "
-            "WHERE id = :id AND repo_id = :repo_id AND consumed_at IS NULL"
+            "WHERE id = :id AND repo_id = :repo_id "
+            "  AND consumed_at IS NULL AND expires_at > NOW()"
         ).bindparams(id=token_id, repo_id=repo_id)
     )
     db.commit()

@@ -1,6 +1,11 @@
-resource "aws_cloudwatch_log_group" "flow_log" {
-  name = "/aws/vpc-flow-logs/${var.project_name}"
-}
+# VPC Flow Logs log group — only created when flow logs are enabled.
+# DEV:  flow logs disabled (cost saving). Uncomment enable_flow_log block
+#       in the VPC module below and un-comment this resource for PROD.
+#
+# resource "aws_cloudwatch_log_group" "flow_log" {
+#   name              = "/aws/vpc-flow-logs/${var.project_name}"
+#   retention_in_days = 30
+# }
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"

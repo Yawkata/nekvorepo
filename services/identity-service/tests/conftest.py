@@ -269,6 +269,6 @@ def mock_ses_identity():
 
 
 @pytest.fixture
-def mock_sqs_identity():
-    with patch("app.services.sqs.publish_cache_invalidation") as m:
+def mock_events_identity():
+    with patch("app.services.events.publish_cache_invalidation") as m:
         yield m

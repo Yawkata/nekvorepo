@@ -32,14 +32,29 @@ output "cognito_client_secret" {
   sensitive = true
 }
 
-output "sqs_cache_invalidation_queue_url" {
-  description = "Set as SQS_CACHE_INVALIDATION_QUEUE_URL in identity-service, repo-service, and workflow-service."
-  value       = aws_sqs_queue.cache_invalidation.url
+output "sns_cache_invalidation_topic_arn" {
+  description = "Set as SNS_CACHE_INVALIDATION_TOPIC_ARN in identity-service. The topic fans out to both consumer queues."
+  value       = aws_sns_topic.cache_invalidation.arn
+}
+
+output "repo_cache_invalidation_queue_url" {
+  description = "Set as SQS_CACHE_INVALIDATION_QUEUE_URL in repo-service."
+  value       = aws_sqs_queue.repo_cache_invalidation.url
+}
+
+output "workflow_cache_invalidation_queue_url" {
+  description = "Set as SQS_CACHE_INVALIDATION_QUEUE_URL in workflow-service."
+  value       = aws_sqs_queue.workflow_cache_invalidation.url
 }
 
 output "ses_sender_email" {
   description = "Verified SES sender address. Set as SES_FROM_EMAIL in identity-service."
   value       = aws_sesv2_email_identity.sender.email_identity
+}
+
+output "ses_configuration_set_name" {
+  description = "SES configuration set name. Set as SES_CONFIGURATION_SET_NAME in identity-service."
+  value       = aws_sesv2_configuration_set.main.configuration_set_name
 }
 
 output "frontend_url" {

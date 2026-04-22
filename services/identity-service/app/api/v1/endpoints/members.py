@@ -10,7 +10,7 @@ import uuid
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlmodel import Session, select
 
 from shared.constants import RepoRole
@@ -22,7 +22,7 @@ from app.api import deps
 from app.core.config import settings
 from app.services import workflow_client, repo_client
 from app.services.notifications import send_role_changed_notification, send_removed_notification
-from app.services.sqs import publish_cache_invalidation
+from app.services.events import publish_cache_invalidation
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -91,13 +91,14 @@ def _get_user_email(user_id: str, db: Session) -> str | None:
 
 
 def _count_admins(repo_id: uuid.UUID, db: Session) -> int:
+    """Return the number of admins in the repo using a single COUNT(*) query."""
     result = db.exec(
-        select(UserRepoLink).where(
+        select(func.count()).where(
             UserRepoLink.repo_id == repo_id,
             UserRepoLink.role == RepoRole.admin,
         )
-    ).all()
-    return len(result)
+    ).one()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +289,8 @@ def remove_member(
     except Exception as exc:
         log.error("remove_delete_drafts_failed", error=str(exc))
 
-    # SQS cache invalidation (no-op if URL empty)
-    publish_cache_invalidation(str(repo_id), target_user_id, settings.SQS_CACHE_INVALIDATION_QUEUE_URL)
+    # SNS fan-out cache invalidation (no-op if topic ARN empty)
+    publish_cache_invalidation(str(repo_id), target_user_id, settings.SNS_CACHE_INVALIDATION_TOPIC_ARN)
 
     # SES notification (best-effort)
     try:

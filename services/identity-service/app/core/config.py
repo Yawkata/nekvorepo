@@ -27,12 +27,19 @@ class Settings(BaseSettings):
     # SES — sender address for invite / membership emails.  Empty = no emails sent.
     SES_FROM_EMAIL: str = ""
 
+    # SES configuration set name (output of terraform: "<project_name>-email-config").
+    # When set, every outbound email is tagged with this configuration set, enabling
+    # bounce/complaint suppression and delivery tracking.  Empty = no configuration set.
+    SES_CONFIGURATION_SET_NAME: str = ""
+
     # Downstream services — identity-service calls these on role change and removal.
     WORKFLOW_SERVICE_URL: str = "http://workflow-service:8000"
     REPO_SERVICE_URL: str = "http://repo-service:8000"
 
-    # SQS cache invalidation queue. Empty = no-op (local dev / CI).
-    SQS_CACHE_INVALIDATION_QUEUE_URL: str = ""
+    # SNS topic ARN for cache-invalidation fan-out. Empty = no-op (local dev / CI).
+    # SNS delivers an independent copy to every subscribed SQS queue so all
+    # consumer services (repo-service, workflow-service) receive the event.
+    SNS_CACHE_INVALIDATION_TOPIC_ARN: str = ""
 
     # Frontend base URL used to build invite accept links in emails.
     INVITE_ACCEPT_BASE_URL: str = "http://localhost:3000"

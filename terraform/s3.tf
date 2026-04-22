@@ -39,13 +39,22 @@ resource "aws_s3_bucket_lifecycle_configuration" "repo_storage" {
 
     filter {}
 
+    # Move infrequently-accessed blobs to cheaper storage after 30 days.
     transition {
       days          = 30
       storage_class = "INTELLIGENT_TIERING"
     }
 
+    # IMPORTANT: Do NOT expire current versions.  Repo blobs are immutable
+    # commit artefacts — deleting them would corrupt commit history.
+    # Instead, expire only noncurrent versions (overwritten/deleted objects)
+    # and clean up orphaned delete markers to keep the bucket tidy.
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+
     expiration {
-      days = 90
+      expired_object_delete_marker = true
     }
   }
 }

@@ -81,18 +81,18 @@ resource "aws_iam_role_policy" "identity_ses" {
   })
 }
 
-resource "aws_iam_role_policy" "identity_sqs_publish" {
-  name = "sqs-cache-invalidation-publish"
+resource "aws_iam_role_policy" "identity_sns_publish" {
+  name = "sns-cache-invalidation-publish"
   role = aws_iam_role.identity_service_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "PublishCacheInvalidation"
+        Sid      = "PublishCacheInvalidationTopic"
         Effect   = "Allow"
-        Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-        Resource = aws_sqs_queue.cache_invalidation.arn
+        Action   = ["sns:Publish"]
+        Resource = aws_sns_topic.cache_invalidation.arn
       },
     ]
   })
@@ -166,7 +166,7 @@ resource "aws_iam_role_policy" "repo_sqs_consume" {
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes",
         ]
-        Resource = aws_sqs_queue.cache_invalidation.arn
+        Resource = aws_sqs_queue.repo_cache_invalidation.arn
       },
     ]
   })
@@ -235,7 +235,7 @@ resource "aws_iam_role_policy" "workflow_sqs_consume" {
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes",
         ]
-        Resource = aws_sqs_queue.cache_invalidation.arn
+        Resource = aws_sqs_queue.workflow_cache_invalidation.arn
       },
     ]
   })

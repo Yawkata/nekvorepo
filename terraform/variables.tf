@@ -22,6 +22,7 @@ variable "allowed_ips" {
 variable "ses_sender_email" {
   type        = string
   description = "Verified SES sender address (e.g. noreply@example.com). AWS sends a confirmation email to this address on first apply."
+  default     = "f.ermenkov@gmail.com"
 }
 
 variable "frontend_url" {

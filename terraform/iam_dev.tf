@@ -22,7 +22,8 @@ resource "aws_iam_user_policy" "local_dev_policy" {
           "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminSetUserPassword",
           "cognito-idp:AdminInitiateAuth",
           "ses:SendEmail", "ses:SendRawEmail",
-          "sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes",
+          "sns:Publish",
+          "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes",
           "ssm:GetParameter"
         ]
         Resource = "*" # DEV: Broad for testing. PROD: Will be restricted.
