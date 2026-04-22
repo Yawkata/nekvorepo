@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useEffect, useMemo, useState } from "react";
+import { CSSProperties, ReactNode, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -202,6 +202,21 @@ export default function RepoPage() {
   const [viewCommitHash, setViewCommitHash] = useState<string | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set([""])
+  );
+
+  // File viewer modal state
+  type OpenFile = {
+    path: string;
+    content_type: string;
+    size: number;
+    url: string;
+    text: string | null; // null if not a text file (use download link instead)
+    loadingText: boolean;
+  };
+  const [openedFile, setOpenedFile] = useState<OpenFile | null>(null);
+  const [openingFilePath, setOpeningFilePath] = useState<string | null>(null);
 
   async function handleRenameDraft(draftId: string, currentTitle: string) {
     const token = localStorage.getItem("token");
@@ -365,6 +380,102 @@ export default function RepoPage() {
       setCommitsError("Failed to connect to server");
     } finally {
       setCommitsLoading(false);
+    }
+  }
+
+  function toggleFolder(folderPath: string) {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderPath)) next.delete(folderPath);
+      else next.add(folderPath);
+      return next;
+    });
+  }
+
+  function isTextContentType(contentType: string): boolean {
+    if (!contentType) return false;
+    const ct = contentType.toLowerCase();
+    if (ct.startsWith("text/")) return true;
+    if (ct.includes("json")) return true;
+    if (ct.includes("xml")) return true;
+    if (ct.includes("javascript")) return true;
+    if (ct.includes("yaml")) return true;
+    if (ct.includes("csv")) return true;
+    if (ct.includes("markdown")) return true;
+    return false;
+  }
+
+  async function handleOpenViewFile(file: ViewFile) {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setOpeningFilePath(file.path);
+    try {
+      // Split the path into segments and encode each one for the dynamic route
+      const segments = file.path.split("/").map(encodeURIComponent).join("/");
+      const query = viewCommitHash
+        ? `?ref=${encodeURIComponent(viewCommitHash)}`
+        : "";
+      const res = await fetch(
+        `/api/repos/${repoId}/files/${segments}${query}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      let data: { url?: string; content_type?: string; size?: number } = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (!res.ok || !data.url) {
+        alert(extractErrorMessage(data, "Failed to open file"));
+        return;
+      }
+
+      const opened: OpenFile = {
+        path: file.path,
+        content_type: data.content_type || file.content_type,
+        size: data.size ?? file.size,
+        url: data.url,
+        text: null,
+        loadingText: isTextContentType(data.content_type || file.content_type),
+      };
+      setOpenedFile(opened);
+
+      // Fetch text content for readable types
+      if (opened.loadingText) {
+        try {
+          const fileRes = await fetch(opened.url);
+          if (fileRes.ok) {
+            const body = await fileRes.text();
+            setOpenedFile((prev) =>
+              prev && prev.path === file.path
+                ? { ...prev, text: body, loadingText: false }
+                : prev
+            );
+          } else {
+            setOpenedFile((prev) =>
+              prev && prev.path === file.path
+                ? { ...prev, loadingText: false }
+                : prev
+            );
+          }
+        } catch {
+          setOpenedFile((prev) =>
+            prev && prev.path === file.path
+              ? { ...prev, loadingText: false }
+              : prev
+          );
+        }
+      }
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setOpeningFilePath(null);
     }
   }
 
@@ -746,6 +857,142 @@ export default function RepoPage() {
     if (!q) return viewFiles;
     return viewFiles.filter((f) => f.path.toLowerCase().includes(q));
   }, [viewFiles, search]);
+
+  // Build a folder tree from the flat list of view files.
+  type TreeNode = {
+    name: string;
+    path: string;
+    isFolder: boolean;
+    file?: ViewFile;
+    children: TreeNode[];
+  };
+
+  const viewTree = useMemo<TreeNode>(() => {
+    const root: TreeNode = {
+      name: "",
+      path: "",
+      isFolder: true,
+      children: [],
+    };
+    const folderMap = new Map<string, TreeNode>();
+    folderMap.set("", root);
+
+    for (const f of filteredViewFiles) {
+      const parts = f.path.split("/").filter(Boolean);
+      let parentPath = "";
+      let parent = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const segment = parts[i];
+        const currPath = parentPath ? `${parentPath}/${segment}` : segment;
+        let folder = folderMap.get(currPath);
+        if (!folder) {
+          folder = {
+            name: segment,
+            path: currPath,
+            isFolder: true,
+            children: [],
+          };
+          folderMap.set(currPath, folder);
+          parent.children.push(folder);
+        }
+        parent = folder;
+        parentPath = currPath;
+      }
+      const fileName = parts[parts.length - 1] ?? f.path;
+      parent.children.push({
+        name: fileName,
+        path: f.path,
+        isFolder: false,
+        file: f,
+        children: [],
+      });
+    }
+
+    // Sort: folders first, then alphabetical
+    const sortTree = (node: TreeNode) => {
+      node.children.sort((a, b) => {
+        if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      node.children.forEach(sortTree);
+    };
+    sortTree(root);
+    return root;
+  }, [filteredViewFiles]);
+
+  function renderTreeNodes(
+    nodes: TreeNode[],
+    depth: number,
+    expanded: Set<string>,
+    forceExpand: boolean,
+    onToggle: (p: string) => void,
+    onOpen: (f: ViewFile) => void,
+    openingPath: string | null
+  ): ReactNode[] {
+    const out: ReactNode[] = [];
+    for (const node of nodes) {
+      const isExpanded = forceExpand || expanded.has(node.path);
+      const indent = 12 + depth * 16;
+      if (node.isFolder) {
+        out.push(
+          <li
+            key={`dir:${node.path}`}
+            style={styles.fileRow}
+            onClick={() => onToggle(node.path)}
+          >
+            <span
+              style={{
+                ...styles.colName,
+                paddingLeft: indent,
+                cursor: "pointer",
+                color: "#4fc3f7",
+              }}
+            >
+              {isExpanded ? "▾" : "▸"} 📁 {node.name}
+            </span>
+            <span style={styles.colSize}>—</span>
+            <span style={styles.colDate}>folder</span>
+          </li>
+        );
+        if (isExpanded) {
+          out.push(
+            ...renderTreeNodes(
+              node.children,
+              depth + 1,
+              expanded,
+              forceExpand,
+              onToggle,
+              onOpen,
+              openingPath
+            )
+          );
+        }
+      } else if (node.file) {
+        const isOpening = openingPath === node.path;
+        out.push(
+          <li
+            key={`file:${node.path}`}
+            style={{
+              ...styles.fileRow,
+              cursor: "pointer",
+              ...(isOpening ? { opacity: 0.6 } : {}),
+            }}
+            onClick={() => !isOpening && onOpen(node.file!)}
+            title={`Open ${node.path}`}
+          >
+            <span style={{ ...styles.colName, paddingLeft: indent }}>
+              📄 {node.name}
+            </span>
+            <span style={styles.colSize}>{formatSize(node.file.size)}</span>
+            <span style={styles.colDate}>
+              {isOpening ? "Opening…" : node.file.content_type}
+            </span>
+          </li>
+        );
+      }
+    }
+    return out;
+  }
 
   return (
     <div style={styles.container}>
@@ -1290,17 +1537,19 @@ export default function RepoPage() {
                   ) : (
                     <ul style={styles.fileList}>
                       <li style={styles.fileHeaderRow}>
-                        <span style={styles.colName}>Path</span>
+                        <span style={styles.colName}>Name</span>
                         <span style={styles.colSize}>Size</span>
                         <span style={styles.colDate}>Type</span>
                       </li>
-                      {filteredViewFiles.map((f) => (
-                        <li key={f.path} style={styles.fileRow}>
-                          <span style={styles.colName}>{f.path}</span>
-                          <span style={styles.colSize}>{formatSize(f.size)}</span>
-                          <span style={styles.colDate}>{f.content_type}</span>
-                        </li>
-                      ))}
+                      {renderTreeNodes(
+                        viewTree.children,
+                        0,
+                        expandedFolders,
+                        search.trim().length > 0,
+                        toggleFolder,
+                        handleOpenViewFile,
+                        openingFilePath
+                      )}
                     </ul>
                   )}
                 </div>
@@ -1309,6 +1558,76 @@ export default function RepoPage() {
           ) : null}
         </main>
       </div>
+
+      {/* FILE VIEWER MODAL */}
+      {openedFile && (
+        <div
+          style={styles.viewerOverlay}
+          onClick={() => setOpenedFile(null)}
+        >
+          <div
+            style={styles.viewerContent}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.viewerHeader}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
+                <span style={styles.viewerTitle}>{openedFile.path}</span>
+                <span style={styles.viewerSubtitle}>
+                  {openedFile.content_type} · {formatSize(openedFile.size)}
+                </span>
+              </div>
+              <a
+                href={openedFile.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={styles.viewerDownload}
+              >
+                Open / Download ↗
+              </a>
+              <button
+                onClick={() => setOpenedFile(null)}
+                style={styles.viewerCloseBtn}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={styles.viewerBody}>
+              {openedFile.loadingText ? (
+                <div style={styles.viewerState}>Loading file content…</div>
+              ) : openedFile.text !== null ? (
+                <pre style={styles.viewerPre}>{openedFile.text}</pre>
+              ) : openedFile.content_type.startsWith("image/") ? (
+                <img
+                  src={openedFile.url}
+                  alt={openedFile.path}
+                  style={styles.viewerImage}
+                />
+              ) : openedFile.content_type.startsWith("video/") ? (
+                <video
+                  src={openedFile.url}
+                  controls
+                  style={styles.viewerImage}
+                />
+              ) : openedFile.content_type.startsWith("audio/") ? (
+                <audio src={openedFile.url} controls style={{ width: "100%" }} />
+              ) : openedFile.content_type === "application/pdf" ? (
+                <iframe
+                  src={openedFile.url}
+                  style={styles.viewerIframe}
+                  title={openedFile.path}
+                />
+              ) : (
+                <div style={styles.viewerState}>
+                  Preview not available for this file type.
+                  <br />
+                  Use the &quot;Open / Download&quot; link above.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1535,6 +1854,101 @@ const styles: { [key: string]: CSSProperties } = {
     fontSize: 12,
     color: "#4fc3f7",
     flex: 1,
+  },
+  viewerOverlay: {
+    position: "fixed" as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: "rgba(0, 0, 0, 0.75)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2000,
+    padding: 24,
+  },
+  viewerContent: {
+    background: PANEL,
+    border: `1px solid ${PURPLE}`,
+    borderRadius: 10,
+    width: "90vw",
+    maxWidth: 1100,
+    height: "85vh",
+    display: "flex",
+    flexDirection: "column" as const,
+    overflow: "hidden",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.7)",
+  },
+  viewerHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "12px 16px",
+    borderBottom: `1px solid ${BORDER}`,
+  },
+  viewerTitle: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: TEXT,
+    whiteSpace: "nowrap" as const,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  viewerSubtitle: {
+    fontSize: 11,
+    color: MUTED,
+  },
+  viewerDownload: {
+    fontSize: 12,
+    color: "#4fc3f7",
+    textDecoration: "none",
+    padding: "6px 10px",
+    border: `1px solid ${BORDER}`,
+    borderRadius: 6,
+    whiteSpace: "nowrap" as const,
+  },
+  viewerCloseBtn: {
+    background: "transparent",
+    border: "none",
+    color: TEXT,
+    fontSize: 18,
+    cursor: "pointer",
+    padding: "4px 8px",
+  },
+  viewerBody: {
+    flex: 1,
+    overflow: "auto",
+    padding: 16,
+    minHeight: 0,
+  },
+  viewerState: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    color: MUTED,
+    textAlign: "center" as const,
+  },
+  viewerPre: {
+    margin: 0,
+    fontFamily: "Consolas, Monaco, monospace",
+    fontSize: 13,
+    color: TEXT,
+    whiteSpace: "pre-wrap" as const,
+    wordBreak: "break-word" as const,
+  },
+  viewerImage: {
+    maxWidth: "100%",
+    maxHeight: "100%",
+    display: "block",
+    margin: "0 auto",
+  },
+  viewerIframe: {
+    width: "100%",
+    height: "100%",
+    border: "none",
+    background: "white",
   },
   emptyFiles: {
     height: "100%",
