@@ -7,6 +7,14 @@ The `users` table stores the Cognito sub → email mapping so that
 member list endpoints can return email addresses without calling Cognito
 on every request. Email is upserted on every successful login.
 
+**Spec delta (project_definition_v9.docx):** the spec defines 8 tables;
+this adds a 9th.  Rationale: rendering a repo's member list would otherwise
+require N Cognito `AdminGetUser` calls per page load — O(N) network hops,
+rate-limit pressure, and a hard dependency on Cognito availability for
+every authenticated render.  Storing the sub→email mapping in Postgres
+keeps member listing a single JOIN, and the row is re-synced on every
+login so staleness is bounded by the JWT lifetime (60 minutes).
+
 AWS Well-Architected Security Pillar SEC05: Least-privilege grants applied
 per service, consistent with migration 008 pattern.
 """

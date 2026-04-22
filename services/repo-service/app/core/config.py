@@ -6,6 +6,11 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "repo-service"
     API_V1_STR: str = "/v1"
 
+    # Deployment environment — controls Swagger/OpenAPI exposure.
+    # "dev" / "staging" keep /docs open; "prod" disables them to reduce
+    # attack surface (AWS Well-Architected SEC03).  Override via ENV=prod.
+    ENV: str = "dev"
+
     # Database
     DATABASE_URL: str
 

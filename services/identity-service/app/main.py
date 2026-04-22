@@ -68,6 +68,10 @@ app = FastAPI(
         {"name": "ops", "description": "Kubernetes liveness and readiness probes."},
     ],
     swagger_ui_parameters={"persistAuthorization": True},
+    # Disable interactive docs + OpenAPI schema in production (SEC03 — reduce attack surface).
+    docs_url=None if settings.ENV == "prod" else "/docs",
+    redoc_url=None if settings.ENV == "prod" else "/redoc",
+    openapi_url=None if settings.ENV == "prod" else "/openapi.json",
     lifespan=lifespan,
 )
 

@@ -71,6 +71,32 @@ _retry = retry(
 )
 
 
+def delete_repo_commits(repo_id: uuid.UUID) -> None:
+    """
+    Ask workflow-service to hard-delete every commit row for repo_id.
+    Used by the phase-10 DELETE /v1/repos/{id} cascade.  Best-effort —
+    logs but does NOT raise on failure so the primary repo_heads delete
+    still proceeds.
+    """
+    @_retry
+    def _call() -> None:
+        resp = _get().delete(
+            f"/v1/internal/repos/{repo_id}",
+            headers=_outbound_headers(),
+        )
+        resp.raise_for_status()
+
+    try:
+        _call()
+        log.info("repo_commits_deleted_via_client", repo_id=str(repo_id))
+    except Exception as exc:
+        log.warning(
+            "repo_commits_delete_failed",
+            repo_id=str(repo_id),
+            error=str(exc),
+        )
+
+
 def cancel_member_commits(repo_id: uuid.UUID, user_id: str) -> None:
     """
     Ask workflow-service to cancel all pending commits for user_id in repo_id.

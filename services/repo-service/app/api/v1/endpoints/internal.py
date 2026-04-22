@@ -214,3 +214,52 @@ def delete_member_drafts(
         user_id=user_id,
         count=len(drafts),
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/internal/repos/{repo_id}/drafts
+# Phase 10 — called from workflow-service on repo deletion.
+# Hard-deletes every draft for the repo and wipes the corresponding EFS
+# directories (best-effort, idempotent).
+# ---------------------------------------------------------------------------
+
+@router.delete(
+    "/repos/{repo_id}/drafts",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Hard-delete all drafts + EFS dirs for a repo (phase 10 cascade)",
+)
+def delete_repo_drafts(
+    repo_id: uuid.UUID,
+    db: Session = Depends(deps.get_db),
+    efs: EFSService = Depends(deps.get_efs),
+) -> None:
+    """
+    Walks every Draft row for the given repo, wipes its EFS directory, and
+    hard-deletes the row.  Idempotent: a missing row or directory counts as
+    success (204).  The EFS wipe is best-effort per-draft so that a single
+    corrupted directory does not abort the entire cascade.
+
+    This endpoint is internal-only (Kubernetes NetworkPolicy denies external
+    traffic to /v1/internal/*).  It is called exactly once per repo deletion
+    by workflow-service's DELETE /v1/repos/{id} coordinator.
+    """
+    drafts = db.exec(select(Draft).where(Draft.repo_id == repo_id)).all()
+
+    for draft in drafts:
+        try:
+            efs.delete_dir(draft.user_id, str(repo_id), str(draft.id))
+        except Exception as exc:
+            log.warning(
+                "draft_efs_wipe_failed",
+                draft_id=str(draft.id),
+                repo_id=str(repo_id),
+                error=str(exc),
+            )
+        db.delete(draft)
+
+    db.commit()
+    log.info(
+        "repo_drafts_deleted",
+        repo_id=str(repo_id),
+        count=len(drafts),
+    )

@@ -6,6 +6,8 @@ These are called by Repo-Service and Workflow-Service to manage memberships and
 perform role lookups with a 60-second TTL on the caller's side.
 """
 import uuid
+
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 from pydantic import BaseModel
@@ -14,6 +16,7 @@ from shared.models.workflow import RepoHead
 from shared.constants import RepoRole
 from app.api import deps
 
+log = structlog.get_logger()
 router = APIRouter()
 
 _404 = {404: {"description": "Membership not found"}}
@@ -160,3 +163,5 @@ def delete_membership(
 
     db.delete(link)
     db.commit()
+
+

@@ -16,16 +16,20 @@ from datetime import datetime
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, HTTPException, Security, status
 from pydantic import BaseModel, field_validator
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from shared.constants import RepoRole
 from shared.models.identity import UserRepoLink
+from shared.models.invite import InviteToken  # noqa: F401 — ensures table is registered
 from shared.models.workflow import RepoHead
 from shared.security import TokenData, verify_passport
 from app.api import deps
+from app.core.config import settings
+from app.services import events, repo_client, workflow_client
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -274,4 +278,121 @@ def get_repo(
         version=repo.version,
         created_at=repo.created_at,
         role=link.role,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/repos/{repo_id}  — Phase 10 admin-only cascade
+# ---------------------------------------------------------------------------
+
+@router.delete(
+    "/{repo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: {"description": "Invalid or expired token"},
+        403: {"description": "Not a repo admin"},
+        404: {"description": "Repository not found"},
+    },
+    summary="Hard-delete a repository and all dependent rows (admin only)",
+)
+def delete_repo(
+    repo_id: uuid.UUID,
+    db: Session = Depends(deps.get_db),
+    passport: TokenData = Security(verify_passport),
+) -> None:
+    """
+    Phase-10 repo deletion cascade.  Owned by identity-service because
+    identity-service owns repo_heads + user_repo_links + invite_tokens and
+    is the only role with DELETE privilege on those tables (migration 010).
+
+    Cascade order (FK-safe, best-effort for downstream calls):
+
+      1. Authorise — caller must be admin on this repo.
+      2. Delegate draft + EFS cleanup              → repo-service.
+      3. Delegate commit-row cleanup               → workflow-service.
+      4. Expire invite tokens + snapshot members   (this DB).
+      5. Publish SNS cache-invalidation per member (best-effort per-message).
+      6. Hard-delete user_repo_links + invite_tokens.
+      7. Hard-delete repo_heads.
+
+    Steps 2+3 are best-effort: failures are logged but do not abort the
+    cascade so a stuck downstream service cannot strand the repo row.  The
+    primary repo_heads DELETE (step 7) is the final writer; any retry of
+    this endpoint after step 7 succeeds returns 404 (idempotent).
+    """
+    repo = db.get(RepoHead, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    repo_name = repo.repo_name  # capture before cascade so the row-gone log line is safe
+
+    link = db.exec(
+        select(UserRepoLink).where(
+            UserRepoLink.repo_id == repo_id,
+            UserRepoLink.user_id == passport.user_id,
+        )
+    ).first()
+    if link is None or link.role != RepoRole.admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins can delete a repository.",
+        )
+
+    # Step 2 — delegate draft + EFS cleanup to repo-service.
+    try:
+        repo_client.delete_repo_drafts(repo_id)
+    except Exception as exc:
+        log.error("delete_repo_drafts_failed", repo_id=str(repo_id), error=str(exc))
+
+    # Step 3 — delegate commit-row cleanup to workflow-service.
+    try:
+        workflow_client.delete_repo_commits(repo_id)
+    except Exception as exc:
+        log.error("delete_repo_commits_failed", repo_id=str(repo_id), error=str(exc))
+
+    # Step 4 — expire invite tokens and snapshot members for cache invalidation.
+    db.exec(  # type: ignore[call-overload]
+        text(
+            "UPDATE invite_tokens SET expires_at = now() "
+            "WHERE repo_id = :repo_id AND expires_at > now()"
+        ).bindparams(repo_id=repo_id)
+    )
+    member_ids = [
+        row.user_id
+        for row in db.exec(
+            select(UserRepoLink).where(UserRepoLink.repo_id == repo_id)
+        ).all()
+    ]
+    db.commit()
+
+    # Step 5 — publish per-member SNS cache-invalidation (best-effort each).
+    topic_arn = settings.SNS_CACHE_INVALIDATION_TOPIC_ARN
+    for uid in member_ids:
+        try:
+            events.publish_cache_invalidation(str(repo_id), uid, topic_arn)
+        except Exception as exc:
+            log.warning(
+                "repo_delete_cache_invalidation_failed",
+                repo_id=str(repo_id), user_id=uid, error=str(exc),
+            )
+
+    # Step 6 — hard-delete memberships + invite tokens.
+    db.exec(  # type: ignore[call-overload]
+        text("DELETE FROM user_repo_links WHERE repo_id = :repo_id").bindparams(repo_id=repo_id)
+    )
+    db.exec(  # type: ignore[call-overload]
+        text("DELETE FROM invite_tokens WHERE repo_id = :repo_id").bindparams(repo_id=repo_id)
+    )
+    db.commit()
+
+    # Step 7 — remove the repo_heads row.  Mid-session requests across every
+    # service now resolve to 404.
+    db.delete(repo)
+    db.commit()
+
+    log.info(
+        "repo_deleted",
+        repo_id=str(repo_id),
+        admin_id=passport.user_id,
+        repo_name=repo_name,
+        member_count=len(member_ids),
     )

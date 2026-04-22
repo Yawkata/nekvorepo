@@ -1,11 +1,9 @@
-import json
 import threading
 import uuid
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import boto3
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +13,7 @@ from sqlmodel import text, Session, select
 from shared.constants import CommitStatus, DraftStatus
 from app.database import engine
 from shared.logging import configure_logging
+from shared.sqs_consumer import run_cache_invalidation_consumer
 from shared.models.repo import Draft
 from shared.models.workflow import RepoCommit, RepoHead
 from app.api.v1.api import api_router
@@ -25,7 +24,6 @@ configure_logging("repo-service")
 log = structlog.get_logger()
 
 _SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
-_SQS_POLL_WAIT = 20  # AWS long-poll max
 
 # Mapping from CommitStatus → DraftStatus for fallback recovery
 _COMMIT_TO_DRAFT_FALLBACK: dict[CommitStatus, DraftStatus] = {
@@ -106,30 +104,16 @@ def _reconstructing_sweep() -> None:
 def _sqs_cache_invalidation_consumer() -> None:
     """
     Daemon thread: long-polls the SQS cache-invalidation queue and evicts
-    stale role-cache entries whenever a member is removed.
-    No-op (exits immediately) if SQS_CACHE_INVALIDATION_QUEUE_URL is empty.
+    stale role-cache entries whenever a member is removed.  Delegates to the
+    shared consumer helper so classification of fatal vs transient errors is
+    identical across every consumer service.
     """
-    queue_url = settings.SQS_CACHE_INVALIDATION_QUEUE_URL
-    if not queue_url:
-        return
-    sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
-    while True:
-        try:
-            resp = sqs.receive_message(
-                QueueUrl=queue_url,
-                MaxNumberOfMessages=10,
-                WaitTimeSeconds=_SQS_POLL_WAIT,
-            )
-            for msg in resp.get("Messages", []):
-                try:
-                    body = json.loads(msg["Body"])
-                    identity_client.invalidate(body["repo_id"], body["user_id"])
-                    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
-                except Exception as exc:
-                    log.error("sqs_message_error", error=str(exc))
-        except Exception as exc:
-            log.error("sqs_consumer_error", error=str(exc))
-            time.sleep(5)
+    run_cache_invalidation_consumer(
+        queue_url=settings.SQS_CACHE_INVALIDATION_QUEUE_URL,
+        region_name=settings.AWS_REGION,
+        on_invalidate=identity_client.invalidate,
+        service_name="repo-service",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +160,10 @@ app = FastAPI(
     ],
     lifespan=lifespan,
     swagger_ui_parameters={"persistAuthorization": True},
+    # Disable interactive docs + OpenAPI schema in production (SEC03 — reduce attack surface).
+    docs_url=None if settings.ENV == "prod" else "/docs",
+    redoc_url=None if settings.ENV == "prod" else "/redoc",
+    openapi_url=None if settings.ENV == "prod" else "/openapi.json",
 )
 
 app.add_middleware(

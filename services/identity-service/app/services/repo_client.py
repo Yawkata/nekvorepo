@@ -66,6 +66,31 @@ _retry = retry(
 )
 
 
+def delete_repo_drafts(repo_id: uuid.UUID) -> None:
+    """
+    Ask repo-service to hard-delete every draft for repo_id and wipe its
+    EFS directory.  Used by the phase-10 DELETE /v1/repos/{id} cascade.
+    Best-effort — logs but does NOT raise on failure.
+    """
+    @_retry
+    def _call() -> None:
+        resp = _get().delete(
+            f"/v1/internal/repos/{repo_id}/drafts",
+            headers=_outbound_headers(),
+        )
+        resp.raise_for_status()
+
+    try:
+        _call()
+        log.info("repo_drafts_deleted_via_client", repo_id=str(repo_id))
+    except Exception as exc:
+        log.warning(
+            "repo_drafts_delete_failed",
+            repo_id=str(repo_id),
+            error=str(exc),
+        )
+
+
 def delete_member_drafts(repo_id: uuid.UUID, user_id: str) -> None:
     """
     Ask repo-service to hard-delete all drafts for user_id in repo_id and

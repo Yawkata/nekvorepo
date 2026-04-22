@@ -125,6 +125,38 @@ def sync_blobs(draft_id: uuid.UUID, repo_id: uuid.UUID, user_id: str) -> dict[st
         raise HTTPException(status_code=502, detail="Repo service is unreachable.")
 
 
+def delete_repo_drafts(repo_id: uuid.UUID) -> None:
+    """
+    Ask repo-service to hard-delete every draft for this repo and wipe each
+    corresponding EFS directory.  Called from the phase-10 repo deletion
+    cascade (DELETE /v1/repos/{id}).
+
+    Best-effort: raises HTTPException(502) on transient failure so the caller
+    can log and continue.  The endpoint is idempotent on the repo-service side:
+    missing drafts or EFS paths are treated as success.
+    """
+    @_retry
+    def _call() -> None:
+        resp = _get().delete(
+            f"/v1/internal/repos/{repo_id}/drafts",
+            headers=_outbound_headers(),
+        )
+        resp.raise_for_status()
+
+    try:
+        _call()
+        log.info("repo_drafts_deleted", repo_id=str(repo_id))
+    except RetryError:
+        log.error("repo_delete_drafts_exhausted_retries", repo_id=str(repo_id))
+        raise HTTPException(status_code=502, detail="Repo service unavailable during draft cleanup.")
+    except httpx.HTTPStatusError as exc:
+        log.error("repo_delete_drafts_failed", repo_id=str(repo_id), status_code=exc.response.status_code)
+        raise HTTPException(status_code=502, detail="Draft cleanup failed in repo-service.")
+    except httpx.RequestError as exc:
+        log.error("repo_service_unreachable", error=str(exc))
+        raise HTTPException(status_code=502, detail="Repo service is unreachable.")
+
+
 def wipe_draft(draft_id: uuid.UUID, repo_id: uuid.UUID, user_id: str) -> None:
     """
     Ask repo-service to delete the EFS draft directory after approval.
