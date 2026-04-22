@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+const IDENTITY_URL =
+  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
+
 export async function PUT(
   req: Request,
   { params }: { params: Promise<{ repo_id: string; target_user_id: string }> }
@@ -10,7 +13,7 @@ export async function PUT(
 
   try {
     const response = await fetch(
-      `http://localhost:8001/v1/repos/${repo_id}/members/${encodeURIComponent(
+      `${IDENTITY_URL}/v1/repos/${repo_id}/members/${encodeURIComponent(
         target_user_id
       )}/role`,
       {

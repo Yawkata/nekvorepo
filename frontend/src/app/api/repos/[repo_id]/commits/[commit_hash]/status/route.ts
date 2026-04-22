@@ -1,20 +1,19 @@
 import { NextResponse } from "next/server";
 
-const IDENTITY_URL =
-  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
+const WORKFLOW_SERVICE_URL =
+  process.env.WORKFLOW_SERVICE_URL || "http://localhost:8002";
 
-export async function POST(
+export async function GET(
   req: Request,
-  { params }: { params: Promise<{ repo_id: string; token_id: string }> }
+  { params }: { params: Promise<{ repo_id: string; commit_hash: string }> }
 ) {
   const authHeader = req.headers.get("authorization");
-  const { repo_id, token_id } = await params;
+  const { repo_id, commit_hash } = await params;
 
   try {
     const response = await fetch(
-      `${IDENTITY_URL}/v1/repos/${repo_id}/invites/${token_id}/resend`,
+      `${WORKFLOW_SERVICE_URL}/v1/repos/${repo_id}/commits/${commit_hash}/status`,
       {
-        method: "POST",
         headers: {
           Authorization: authHeader || "",
         },
