@@ -8,6 +8,7 @@ import Link from "next/link";
 export default function HomePage() {
   const router = useRouter();
   const [repos, setRepos] = useState<any[]>([]);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -51,29 +52,41 @@ export default function HomePage() {
         <div style={styles.main}>
           <h2>Home</h2>
 
-          {/* Actions */}
-          <div style={styles.actions}>
-
-              <Link href="/create_repo">
-                  <button style={styles.button}>
-                      Create new repository
-                  </button>
-              </Link>
+          {/* Search and Create Button */}
+          <div style={styles.searchContainer}>
+            <input
+              type="text"
+              placeholder="Search repositories..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={styles.searchInput}
+            />
+            <Link href="/create_repo">
+              <button style={styles.button}>
+                Create new repository
+              </button>
+            </Link>
           </div>
 
           {/* SHOW REPOS */}
-          {repos.map((repo) => {
-            const id = repo.repo_id ?? repo.id;
-            if (!id) return null;
-            return (
-              <Link key={id} href={`/repo/${id}`}>
-                <div style={styles.card}>
-                  <h3>{repo.repo_name}</h3>
-                  <p style={{ color: "#8b949e" }}>{repo.description}</p>
-                </div>
-              </Link>
-            );
-          })}
+          {repos
+            .filter((repo) =>
+              (repo.repo_name?.toLowerCase() ?? "").includes(
+                search.toLowerCase()
+              )
+            )
+            .map((repo) => {
+              const id = repo.repo_id ?? repo.id;
+              if (!id) return null;
+              return (
+                <Link key={id} href={`/repo/${id}`}>
+                  <div style={styles.card}>
+                    <h3>{repo.repo_name}</h3>
+                    <p style={{ color: "#8b949e" }}>{repo.description}</p>
+                  </div>
+                </Link>
+              );
+            })}
 
           {/* FOOTER */}
         <div style={styles.footer}>
@@ -164,7 +177,24 @@ const styles: { [key: string]: CSSProperties } = {
   main: {
   flex: 1,
   padding: 20,
-  paddingBottom: 70, 
+  paddingBottom: 70,
+  },
+  searchContainer: {
+    display: "flex",
+    gap: 10,
+    marginBottom: 20,
+    alignItems: "center",
+  },
+  searchInput: {
+    flex: 1,
+    maxWidth: 400,
+    padding: "10px 14px",
+    borderRadius: 6,
+    border: "1px solid #30363d",
+    background: "#161b22",
+    color: "#c9d1d9",
+    fontSize: 14,
+    outline: "none",
   },
   actions: {
     display: "flex",
@@ -173,12 +203,14 @@ const styles: { [key: string]: CSSProperties } = {
   },
 
   button: {
-    padding: "8px 12px",
+    padding: "10px 16px",
     borderRadius: 6,
-    border: "1px solid #30363d",
-    background: "transparent",
+    border: "1px solid purple",
+    background: "purple",
     color: "white",
     cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 14,
   },
 
   card: {

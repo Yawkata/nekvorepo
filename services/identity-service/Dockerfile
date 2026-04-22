@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         -not -name 'cognito-idp' \
         -not -name 'ses' \
         -not -name 'sqs' \
+	-not -name 'sns' \
         -not -name '*.json' \
         -exec rm -rf {} +
 

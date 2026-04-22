@@ -102,6 +102,47 @@ export default function DraftPage() {
   const [localFolders, setLocalFolders] = useState<ExplorerEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // File viewer state
+  const [openFile, setOpenFile] = useState<{
+    name: string;
+    path: string;
+    content: string;
+    isBinary: boolean;
+    isLoading: boolean;
+  } | null>(null);
+
+  // localStorage key for persisting client-tracked folders. The backend's
+  // list_files only returns files (empty folders are invisible), so we cache
+  // the folders the user has created in this draft until a file lands inside
+  // them. Scoped per draft to avoid cross-draft leakage.
+  const foldersStorageKey = `nekvo:draft-folders:${repoId}:${draftId}`;
+
+  // Load cached folders once we have the draft id.
+  useEffect(() => {
+    if (!repoId || !draftId) return;
+    try {
+      const raw = localStorage.getItem(foldersStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setLocalFolders(parsed);
+      }
+    } catch {
+      /* ignore malformed cache */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoId, draftId]);
+
+  // Persist whenever the client-tracked folder list changes.
+  useEffect(() => {
+    if (!repoId || !draftId) return;
+    try {
+      localStorage.setItem(foldersStorageKey, JSON.stringify(localFolders));
+    } catch {
+      /* quota errors are non-fatal */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localFolders, repoId, draftId]);
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) {
@@ -162,9 +203,13 @@ export default function DraftPage() {
         setError(extractErrorMessage(data, "Failed to load draft files"));
         return;
       }
+      // Backend returns { draft_id, files: [...] } per ExplorerResponse.
+      // Fall back to `entries` / raw array for forward compatibility.
       const list: ExplorerEntry[] = Array.isArray(data)
         ? data
-        : Array.isArray(data.entries)
+        : Array.isArray(data?.files)
+        ? data.files
+        : Array.isArray(data?.entries)
         ? data.entries
         : [];
       setEntries(list);
@@ -364,6 +409,51 @@ export default function DraftPage() {
     }
   }
 
+  async function handleDelete(entry: ExplorerEntry) {
+    const filePath = entry.path || entry.name;
+    const isFolder = entry.type === "folder" || entry.type === "tree";
+    const itemType = isFolder ? "folder" : "file";
+
+    const confirmed = window.confirm(
+      `Delete this ${itemType}: "${filePath}"?\n\nThis action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    setOpenMenu(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/drafts/${draftId}/delete/${encodeURIComponent(filePath)}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to delete"));
+        return;
+      }
+      // Remove from local folders if it was a tracked folder
+      setLocalFolders((prev) =>
+        prev.filter((f) => (f.path || f.name) !== filePath)
+      );
+      await loadExplorer();
+    } catch {
+      alert("Failed to connect to server");
+    }
+  }
+
   const mergedEntries = useMemo(() => {
     if (localFolders.length === 0) return entries;
     const seen = new Set(entries.map((e) => e.path || e.name));
@@ -425,8 +515,13 @@ export default function DraftPage() {
 
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return entriesAtCurrentPath;
-    return entriesAtCurrentPath.filter((e) =>
+    let filtered = entriesAtCurrentPath;
+
+    // Hide .keep files
+    filtered = filtered.filter((e) => e.name !== ".keep");
+
+    if (!q) return filtered;
+    return filtered.filter((e) =>
       e.name.toLowerCase().includes(q)
     );
   }, [entriesAtCurrentPath, search]);
@@ -445,6 +540,66 @@ export default function DraftPage() {
     setCurrentPath(path);
     setSearch("");
     setOpenMenu(null);
+  }
+
+  async function handleOpenFile(entry: ExplorerEntry) {
+    const filePath = entry.path || entry.name;
+    const isFolder = entry.type === "folder" || entry.type === "tree";
+    if (isFolder) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    setOpenFile({
+      name: entry.name,
+      path: filePath,
+      content: "",
+      isBinary: !!entry.is_binary,
+      isLoading: true,
+    });
+
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/drafts/${draftId}/read/${encodeURIComponent(filePath)}`,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+
+      if (res.status === 401) {
+        router.push("/login");
+        setOpenFile(null);
+        return;
+      }
+
+      if (!res.ok) {
+        setOpenFile((prev) =>
+          prev ? { ...prev, content: "Failed to load file", isLoading: false } : null
+        );
+        return;
+      }
+
+      const isBinary = entry.is_binary;
+      let content = "";
+
+      if (isBinary) {
+        content = "[Binary file — cannot display]";
+      } else {
+        content = await res.text();
+      }
+
+      setOpenFile((prev) =>
+        prev ? { ...prev, content, isLoading: false } : null
+      );
+    } catch {
+      setOpenFile((prev) =>
+        prev ? { ...prev, content: "Failed to connect to server", isLoading: false } : null
+      );
+    }
   }
 
   const draftTitle =
@@ -618,9 +773,13 @@ export default function DraftPage() {
                               📁 {f.name}
                             </button>
                           ) : (
-                            <>
+                            <button
+                              onClick={() => handleOpenFile(f)}
+                              style={styles.fileLink}
+                              title="Open file"
+                            >
                               📄 {f.name}
-                            </>
+                            </button>
                           )}
                           {isRenaming && (
                             <span style={styles.inlineNote}> (renaming…)</span>
@@ -649,6 +808,15 @@ export default function DraftPage() {
                               >
                                 Rename
                               </button>
+                              <button
+                                onClick={() => handleDelete(f)}
+                                style={{
+                                  ...styles.menuItem,
+                                  ...styles.menuItemDanger,
+                                }}
+                              >
+                                Delete
+                              </button>
                             </div>
                           )}
                         </span>
@@ -665,6 +833,34 @@ export default function DraftPage() {
           </div>
         </main>
       </div>
+
+      {/* FILE VIEWER MODAL */}
+      {openFile && (
+        <div style={styles.modalOverlay} onClick={() => setOpenFile(null)}>
+          <div
+            style={styles.modalContent}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.modalHeader}>
+              <h2 style={styles.modalTitle}>{openFile.name}</h2>
+              <button
+                onClick={() => setOpenFile(null)}
+                style={styles.closeBtn}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={styles.modalBody}>
+              {openFile.isLoading ? (
+                <div style={styles.loadingPlaceholder}>Loading file…</div>
+              ) : (
+                <pre style={styles.fileContent}>{openFile.content}</pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -895,6 +1091,9 @@ const styles: { [key: string]: CSSProperties } = {
     cursor: "pointer",
     fontSize: 13,
   },
+  menuItemDanger: {
+    color: "#ff6b6b",
+  },
   inlineNote: { color: MUTED, fontSize: 11, marginLeft: 6 },
   createdLine: {
     marginTop: 10,
@@ -937,5 +1136,82 @@ const styles: { [key: string]: CSSProperties } = {
     padding: 0,
     font: "inherit",
     textAlign: "left",
+  },
+  fileLink: {
+    background: "transparent",
+    border: "none",
+    color: TEXT,
+    cursor: "pointer",
+    padding: 0,
+    font: "inherit",
+    textAlign: "left",
+  },
+  modalOverlay: {
+    position: "fixed" as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 1000,
+  },
+  modalContent: {
+    background: PANEL,
+    borderRadius: 12,
+    border: `1px solid ${BORDER}`,
+    boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
+    display: "flex",
+    flexDirection: "column" as const,
+    width: "80vw",
+    maxWidth: 1000,
+    height: "80vh",
+    maxHeight: 800,
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "16px 20px",
+    borderBottom: `1px solid ${BORDER}`,
+  },
+  modalTitle: {
+    margin: 0,
+    fontSize: 18,
+    color: "white",
+    flex: 1,
+  },
+  closeBtn: {
+    background: "transparent",
+    border: "none",
+    color: MUTED,
+    cursor: "pointer",
+    fontSize: 20,
+    padding: "4px 8px",
+    lineHeight: 1,
+  },
+  modalBody: {
+    flex: 1,
+    overflowY: "auto" as const,
+    padding: "16px 20px",
+  },
+  fileContent: {
+    margin: 0,
+    color: TEXT,
+    fontSize: 13,
+    lineHeight: 1.5,
+    fontFamily: "Consolas, 'Courier New', monospace",
+    whiteSpace: "pre-wrap" as const,
+    wordWrap: "break-word" as const,
+  },
+  loadingPlaceholder: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    color: MUTED,
+    fontSize: 14,
   },
 };
