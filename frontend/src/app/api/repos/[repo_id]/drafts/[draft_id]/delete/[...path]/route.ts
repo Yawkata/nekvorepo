@@ -30,16 +30,23 @@ export async function DELETE(
       }
     );
 
-    if (!response.ok) {
-      const text = await response.text();
-      const data = text ? JSON.parse(text).catch(() => ({})) : {};
-      return NextResponse.json(data, { status: response.status });
+    // Handle 204 No Content (success with no body)
+    if (response.status === 204) {
+      return new NextResponse(null, { status: 204 });
     }
 
     const text = await response.text();
-    const data = text ? JSON.parse(text).catch(() => ({})) : {};
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        /* ignore parse errors */
+      }
+    }
     return NextResponse.json(data, { status: response.status });
-  } catch {
+  } catch (error) {
+    console.error("Delete route error:", error);
     return NextResponse.json(
       { error: "Failed to connect to backend" },
       { status: 500 }

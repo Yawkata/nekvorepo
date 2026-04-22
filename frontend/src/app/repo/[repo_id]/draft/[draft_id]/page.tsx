@@ -434,23 +434,42 @@ export default function DraftPage() {
           headers: { Authorization: `Bearer ${token}` },
         }
       );
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : {};
+
       if (res.status === 401) {
         router.push("/login");
         return;
       }
+
+      // 204 No Content is a success response with no body
       if (!res.ok) {
+        const text = await res.text();
+        let data = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            /* ignore parse errors */
+          }
+        }
         alert(extractErrorMessage(data, "Failed to delete"));
         return;
       }
+
       // Remove from local folders if it was a tracked folder
       setLocalFolders((prev) =>
         prev.filter((f) => (f.path || f.name) !== filePath)
       );
-      await loadExplorer();
-    } catch {
-      alert("Failed to connect to server");
+
+      // Refresh the explorer to show the updated file list
+      try {
+        await loadExplorer();
+      } catch (explorerError) {
+        console.error("Error refreshing explorer after delete:", explorerError);
+        // Still consider the delete successful even if refresh fails
+      }
+    } catch (error) {
+      console.error("Delete error:", error);
+      alert("Failed to delete file or folder");
     }
   }
 

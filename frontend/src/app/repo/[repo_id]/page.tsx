@@ -21,12 +21,27 @@ type Draft = {
   created_at?: string;
 };
 
+type Commit = {
+  commit_hash: string;
+  status: "pending" | "approved" | "rejected" | "sibling_rejected";
+  commit_summary: string;
+  commit_description?: string;
+  changes_summary?: string;
+  owner_id: string;
+  timestamp?: string;
+  draft_id?: string;
+  reviewer_comment?: string;
+  parent_commit_hash?: string;
+};
+
 type Repo = {
   repo_id: string;
   repo_name: string;
   description?: string;
   owner_id?: string;
   owner_email?: string;
+  owner_name?: string;
+  full_name?: string;
   created_at?: string;
   updated_at?: string;
   visibility?: string;
@@ -130,6 +145,19 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function getOwnerDisplay(repo: Repo | null): string {
+  if (!repo) return "—";
+  // Prefer full_name, then owner_name, then extract from email, then use owner_id
+  if (repo.full_name) return repo.full_name;
+  if (repo.owner_name) return repo.owner_name;
+  if (repo.owner_email) {
+    // Extract the part before @ as username, or return full email if no @
+    const atIndex = repo.owner_email.indexOf("@");
+    return atIndex > 0 ? repo.owner_email.substring(0, atIndex) : repo.owner_email;
+  }
+  return repo.owner_id || "—";
+}
+
 export default function RepoPage() {
   const router = useRouter();
   const params = useParams();
@@ -147,6 +175,33 @@ export default function RepoPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [renameMode, setRenameMode] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [commitMode, setCommitMode] = useState(false);
+
+  // Commits state
+  const [commits, setCommits] = useState<Commit[]>([]);
+  const [commitsLoading, setCommitsLoading] = useState(false);
+  const [commitsError, setCommitsError] = useState<string | null>(null);
+  const [submittingCommit, setSubmittingCommit] = useState(false);
+  const [approvingHash, setApprovingHash] = useState<string | null>(null);
+  const [rejectingHash, setRejectingHash] = useState<string | null>(null);
+  const [openCommitMenu, setOpenCommitMenu] = useState<string | null>(null);
+
+  // Commit history state
+  const [history, setHistory] = useState<Commit[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  // Collapsible section state
+  const [draftsCollapsed, setDraftsCollapsed] = useState(false);
+  const [pendingCollapsed, setPendingCollapsed] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+
+  // Committed view state (accepted commit files)
+  type ViewFile = { path: string; content_type: string; size: number };
+  const [viewFiles, setViewFiles] = useState<ViewFile[]>([]);
+  const [viewCommitHash, setViewCommitHash] = useState<string | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
 
   async function handleRenameDraft(draftId: string, currentTitle: string) {
     const token = localStorage.getItem("token");
@@ -274,6 +329,293 @@ export default function RepoPage() {
     }
   }
 
+  async function loadCommits() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setCommitsLoading(true);
+    setCommitsError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/commits`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+      if (!res.ok) {
+        setCommitsError(extractErrorMessage(data, "Failed to load commits"));
+        return;
+      }
+      // Backend returns a plain array; fall back to data.commits for safety
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.commits)
+        ? data.commits
+        : [];
+      setCommits(list);
+    } catch {
+      setCommitsError("Failed to connect to server");
+    } finally {
+      setCommitsLoading(false);
+    }
+  }
+
+  async function loadView() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setViewLoading(true);
+    setViewError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/view`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      let data: { commit_hash?: string | null; files?: ViewFile[] } = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (!res.ok) {
+        setViewError(
+          extractErrorMessage(data, "Failed to load committed files")
+        );
+        return;
+      }
+      setViewFiles(Array.isArray(data.files) ? data.files : []);
+      setViewCommitHash(data.commit_hash ?? null);
+    } catch {
+      setViewError("Failed to connect to server");
+    } finally {
+      setViewLoading(false);
+    }
+  }
+
+  async function loadHistory() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/commits/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      let data: unknown = [];
+      try {
+        data = text ? JSON.parse(text) : [];
+      } catch {
+        /* ignore parse errors */
+      }
+      if (!res.ok) {
+        setHistoryError(
+          extractErrorMessage(data, "Failed to load commit history")
+        );
+        return;
+      }
+      const list = Array.isArray(data)
+        ? (data as Commit[])
+        : Array.isArray((data as { commits?: Commit[] })?.commits)
+        ? (data as { commits: Commit[] }).commits
+        : [];
+      setHistory(list);
+    } catch {
+      setHistoryError("Failed to connect to server");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function canReviewCommits(): boolean {
+    const role = (repo?.role || "").toLowerCase();
+    return role === "admin" || role === "reviewer";
+  }
+
+  function canAccessDrafts(): boolean {
+    const role = (repo?.role || "").toLowerCase();
+    return role === "admin" || role === "author";
+  }
+
+  function handleCommitButtonClick() {
+    setCommitMode((v) => !v);
+    setRenameMode(false);
+    setDeleteMode(false);
+  }
+
+  async function handleDraftForCommit(draft: Draft) {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const summary = window.prompt(
+      `Submit "${draft.label || "Draft"}" for review.\n\nCommit summary (1-200 chars):`,
+      ""
+    );
+    if (!summary) return;
+    const trimmed = summary.trim();
+    if (!trimmed || trimmed.length > 200) {
+      alert("Commit summary must be 1-200 characters.");
+      return;
+    }
+
+    setSubmittingCommit(true);
+    try {
+      const draftId = draft.draft_id ?? draft.id;
+      const res = await fetch(`/api/repos/${repoId}/commits`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ draft_id: draftId, commit_summary: trimmed }),
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to submit draft for review"));
+        return;
+      }
+      alert("Draft submitted for review!");
+      setCommitMode(false);
+      await loadCommits();
+      await loadDrafts();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setSubmittingCommit(false);
+    }
+  }
+
+  async function handleApproveCommit(commitHash: string) {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    if (!window.confirm("Approve this commit?")) return;
+
+    setApprovingHash(commitHash);
+    setOpenCommitMenu(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/commits/${commitHash}/approve`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to approve commit"));
+        return;
+      }
+      alert("Commit approved!");
+      await loadCommits();
+      await loadHistory();
+      await loadView();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setApprovingHash(null);
+    }
+  }
+
+  async function handleRejectCommit(commitHash: string) {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const comment = window.prompt(
+      "Reject this commit?\n\nOptional comment (0-500 chars):",
+      ""
+    );
+    if (comment === null) return;
+    if (comment.length > 500) {
+      alert("Comment must be 0-500 characters.");
+      return;
+    }
+
+    setRejectingHash(commitHash);
+    setOpenCommitMenu(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/commits/${commitHash}/reject`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ comment: comment || undefined }),
+        }
+      );
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to reject commit"));
+        return;
+      }
+      alert("Commit rejected!");
+      await loadCommits();
+      await loadHistory();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setRejectingHash(null);
+    }
+  }
+
   async function handleNewDraft() {
     if (creatingDraft || !repoId) return;
     const token = localStorage.getItem("token");
@@ -385,6 +727,9 @@ export default function RepoPage() {
       .finally(() => setLoading(false));
 
     loadDrafts();
+    loadCommits();
+    loadHistory();
+    loadView();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId, router]);
 
@@ -395,6 +740,12 @@ export default function RepoPage() {
     if (!q) return files;
     return files.filter((f) => f.name.toLowerCase().includes(q));
   }, [files, search]);
+
+  const filteredViewFiles = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return viewFiles;
+    return viewFiles.filter((f) => f.path.toLowerCase().includes(q));
+  }, [viewFiles, search]);
 
   return (
     <div style={styles.container}>
@@ -421,10 +772,22 @@ export default function RepoPage() {
             {filteredFiles.length} / {files.length} files
           </div>
 
+          {canAccessDrafts() && (
           <div style={styles.draftsSection}>
             <div style={styles.draftsHeader}>
-              <label style={styles.sidebarLabel}>Drafts</label>
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <button
+                  onClick={() => setDraftsCollapsed((v) => !v)}
+                  style={styles.collapseBtn}
+                  title={draftsCollapsed ? "Expand drafts" : "Collapse drafts"}
+                >
+                  <span style={styles.collapseArrow}>
+                    {draftsCollapsed ? "▸" : "▾"}
+                  </span>
+                  <label style={{ ...styles.sidebarLabel, cursor: "pointer" }}>
+                    Drafts
+                  </label>
+                </button>
                 <button
                   onClick={loadDrafts}
                   style={{ ...styles.refreshBtn, ...styles.iconBtn }}
@@ -432,6 +795,9 @@ export default function RepoPage() {
                 >
                   ↻
                 </button>
+              </div>
+              {!draftsCollapsed && (
+              <div style={{ display: "flex", gap: 4 }}>
                 <button
                   onClick={() => {
                     setRenameMode((v) => !v);
@@ -467,8 +833,25 @@ export default function RepoPage() {
                 >
                   {deleteMode ? "Cancel" : "Delete Draft"}
                 </button>
+                <button
+                  onClick={handleCommitButtonClick}
+                  disabled={submittingCommit}
+                  style={{
+                    ...styles.refreshBtn,
+                    ...styles.modeBtn,
+                    ...(commitMode
+                      ? { borderColor: "#4fc3f7", color: "#4fc3f7" }
+                      : {}),
+                    ...(submittingCommit ? { opacity: 0.6, cursor: "wait" } : {}),
+                  }}
+                  title={commitMode ? "Cancel commit mode" : "Select a draft to commit"}
+                >
+                  {submittingCommit ? "Submitting…" : commitMode ? "Cancel" : "Commit"}
+                </button>
               </div>
+              )}
             </div>
+            {!draftsCollapsed && (<>
             {renameMode && drafts.length > 0 && (
               <div style={styles.deleteHint}>
                 Click a draft to rename it.
@@ -477,6 +860,11 @@ export default function RepoPage() {
             {deleteMode && drafts.length > 0 && (
               <div style={styles.deleteHint}>
                 Click a draft to delete it.
+              </div>
+            )}
+            {commitMode && drafts.length > 0 && (
+              <div style={styles.deleteHint}>
+                Click a draft to submit it for review.
               </div>
             )}
 
@@ -549,6 +937,20 @@ export default function RepoPage() {
                         >
                           {content}
                         </button>
+                      ) : commitMode ? (
+                        <button
+                          onClick={() => handleDraftForCommit(d)}
+                          disabled={submittingCommit}
+                          style={{
+                            ...styles.draftItem,
+                            ...styles.draftItemCommit,
+                            ...(submittingCommit
+                              ? { opacity: 0.6, cursor: "wait" }
+                              : {}),
+                          }}
+                        >
+                          {content}
+                        </button>
                       ) : (
                         <Link
                           href={`/repo/${repoId}/draft/${id}`}
@@ -562,6 +964,221 @@ export default function RepoPage() {
                 })}
               </ul>
             )}
+            </>)}
+          </div>
+          )}
+
+          {/* PENDING COMMITS SECTION — Only for admin/reviewer */}
+          {canReviewCommits() && (
+            <div style={styles.pendingSection}>
+              <div style={styles.pendingHeader}>
+                <button
+                  onClick={() => setPendingCollapsed((v) => !v)}
+                  style={styles.collapseBtn}
+                  title={pendingCollapsed ? "Expand pending" : "Collapse pending"}
+                >
+                  <span style={styles.collapseArrow}>
+                    {pendingCollapsed ? "▸" : "▾"}
+                  </span>
+                  <label style={{ ...styles.sidebarLabel, cursor: "pointer" }}>
+                    Pending
+                  </label>
+                </button>
+                <button
+                  onClick={loadCommits}
+                  style={{ ...styles.refreshBtn, ...styles.iconBtn }}
+                  title="Refresh pending commits"
+                >
+                  ↻
+                </button>
+              </div>
+
+              {!pendingCollapsed && (<>
+              {commitsLoading ? (
+                <div style={styles.commitsState}>Loading…</div>
+              ) : commitsError ? (
+                <div style={{ ...styles.commitsState, color: "#ff6b6b" }}>
+                  {commitsError}
+                </div>
+              ) : commits.length === 0 ? (
+                <div style={styles.commitsState}>No pending commits.</div>
+              ) : (
+                <ul style={styles.commitsList}>
+                  {commits.map((commit) => {
+                    const isApproving = approvingHash === commit.commit_hash;
+                    const isRejecting = rejectingHash === commit.commit_hash;
+                    const menuOpen = openCommitMenu === commit.commit_hash;
+                    return (
+                      <li key={commit.commit_hash} style={styles.commitItem}>
+                        {commit.draft_id ? (
+                          <Link
+                            href={`/repo/${repoId}/draft/${commit.draft_id}`}
+                            style={styles.commitContentLink}
+                            title="Click to open commit"
+                          >
+                            <span style={styles.commitSummary}>{commit.commit_summary}</span>
+                            <span style={styles.commitMeta}>
+                              <span style={styles.commitOwner}>{commit.owner_id.substring(0, 8)}</span>
+                              <span style={styles.commitDate}>{formatDateTime(commit.timestamp)}</span>
+                              <span style={styles.commitHashSmall}>
+                                #{commit.commit_hash.substring(0, 7)}
+                              </span>
+                            </span>
+                          </Link>
+                        ) : (
+                          <div style={styles.commitContent}>
+                            <span style={styles.commitSummary}>{commit.commit_summary}</span>
+                            <span style={styles.commitMeta}>
+                              <span style={styles.commitOwner}>{commit.owner_id.substring(0, 8)}</span>
+                              <span style={styles.commitDate}>{formatDateTime(commit.timestamp)}</span>
+                            </span>
+                          </div>
+                        )}
+                        <div style={styles.commitActions}>
+                          <button
+                            onClick={() =>
+                              setOpenCommitMenu((cur) =>
+                                cur === commit.commit_hash ? null : commit.commit_hash
+                              )
+                            }
+                            style={styles.dotsBtn}
+                            aria-label="More actions"
+                            title="More actions"
+                            disabled={isApproving || isRejecting}
+                          >
+                            ⋮
+                          </button>
+                          {menuOpen && (
+                            <div style={styles.commitMenu}>
+                              <button
+                                onClick={() => handleApproveCommit(commit.commit_hash)}
+                                disabled={isApproving}
+                                style={{
+                                  ...styles.menuItem,
+                                  ...styles.menuItemSuccess,
+                                  ...(isApproving ? { opacity: 0.6, cursor: "wait" } : {}),
+                                }}
+                              >
+                                {isApproving ? "Approving…" : "Approve"}
+                              </button>
+                              <button
+                                onClick={() => handleRejectCommit(commit.commit_hash)}
+                                disabled={isRejecting}
+                                style={{
+                                  ...styles.menuItem,
+                                  ...styles.menuItemDanger,
+                                  ...(isRejecting ? { opacity: 0.6, cursor: "wait" } : {}),
+                                }}
+                              >
+                                {isRejecting ? "Rejecting…" : "Reject"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              </>)}
+            </div>
+          )}
+
+          {/* COMMIT HISTORY SECTION — Any repo member */}
+          <div style={styles.pendingSection}>
+            <div style={styles.pendingHeader}>
+              <button
+                onClick={() => setHistoryCollapsed((v) => !v)}
+                style={styles.collapseBtn}
+                title={historyCollapsed ? "Expand history" : "Collapse history"}
+              >
+                <span style={styles.collapseArrow}>
+                  {historyCollapsed ? "▸" : "▾"}
+                </span>
+                <label style={{ ...styles.sidebarLabel, cursor: "pointer" }}>
+                  Commit History
+                </label>
+              </button>
+              <button
+                onClick={loadHistory}
+                style={{ ...styles.refreshBtn, ...styles.iconBtn }}
+                title="Refresh commit history"
+              >
+                ↻
+              </button>
+            </div>
+
+            {!historyCollapsed && (<>
+            {historyLoading ? (
+              <div style={styles.commitsState}>Loading…</div>
+            ) : historyError ? (
+              <div style={{ ...styles.commitsState, color: "#ff6b6b" }}>
+                {historyError}
+              </div>
+            ) : history.length === 0 ? (
+              <div style={styles.commitsState}>No commit history.</div>
+            ) : (
+              <ul style={styles.commitsList}>
+                {history.map((commit) => {
+                  const statusColor =
+                    commit.status === "approved"
+                      ? "#51cf66"
+                      : commit.status === "rejected"
+                      ? "#ff6b6b"
+                      : commit.status === "sibling_rejected"
+                      ? "#ffa94d"
+                      : MUTED;
+                  const title = commit.reviewer_comment
+                    ? `${commit.status.toUpperCase()} — ${commit.reviewer_comment}`
+                    : `${commit.status.toUpperCase()} — click to open`;
+                  const content = (
+                    <>
+                      <span style={styles.commitSummary}>
+                        {commit.commit_summary}
+                      </span>
+                      <span style={styles.commitMeta}>
+                        <span
+                          style={{
+                            ...styles.commitStatus,
+                            color: statusColor,
+                            borderColor: statusColor,
+                          }}
+                        >
+                          {commit.status}
+                        </span>
+                        <span style={styles.commitOwner}>
+                          {commit.owner_id.substring(0, 8)}
+                        </span>
+                        <span style={styles.commitDate}>
+                          {formatDateTime(commit.timestamp)}
+                        </span>
+                        <span style={styles.commitHashSmall}>
+                          #{commit.commit_hash.substring(0, 7)}
+                        </span>
+                      </span>
+                    </>
+                  );
+                  return (
+                    <li key={commit.commit_hash} style={styles.commitItem}>
+                      {commit.draft_id ? (
+                        <Link
+                          href={`/repo/${repoId}/draft/${commit.draft_id}`}
+                          style={styles.commitContentLink}
+                          title={title}
+                        >
+                          {content}
+                        </Link>
+                      ) : (
+                        <div style={styles.commitContent} title={title}>
+                          {content}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            </>)}
           </div>
         </aside>
 
@@ -588,21 +1205,15 @@ export default function RepoPage() {
                 <dl style={styles.metaGrid}>
                   <div style={styles.metaItem}>
                     <dt style={styles.metaKey}>Owner</dt>
-                    <dd style={styles.metaVal}>
-                      {repo.owner_email || repo.owner_id || "—"}
-                    </dd>
-                  </div>
-                  <div style={styles.metaItem}>
-                    <dt style={styles.metaKey}>Created</dt>
-                    <dd style={styles.metaVal}>{formatDate(repo.created_at)}</dd>
-                  </div>
-                  <div style={styles.metaItem}>
-                    <dt style={styles.metaKey}>Last updated</dt>
-                    <dd style={styles.metaVal}>{formatDate(repo.updated_at)}</dd>
+                    <dd style={styles.metaVal}>{getOwnerDisplay(repo)}</dd>
                   </div>
                   <div style={styles.metaItem}>
                     <dt style={styles.metaKey}>Created At</dt>
                     <dd style={styles.metaVal}>{formatDateTime(repo.created_at)}</dd>
+                  </div>
+                  <div style={styles.metaItem}>
+                    <dt style={styles.metaKey}>Last updated</dt>
+                    <dd style={styles.metaVal}>{formatDate(repo.updated_at)}</dd>
                   </div>
                 </dl>
               </section>
@@ -642,24 +1253,52 @@ export default function RepoPage() {
                 </div>
 
                 <div style={styles.filesRect}>
-                  {filteredFiles.length === 0 ? (
+                  <div style={styles.viewBanner}>
+                    <span style={styles.viewBannerLabel}>
+                      {viewCommitHash ? "Latest accepted commit" : "Committed files"}
+                    </span>
+                    {viewCommitHash && (
+                      <span style={styles.viewBannerHash}>
+                        #{viewCommitHash.substring(0, 10)}
+                      </span>
+                    )}
+                    <button
+                      onClick={loadView}
+                      style={{ ...styles.refreshBtn, ...styles.iconBtn }}
+                      title="Refresh committed files"
+                    >
+                      ↻
+                    </button>
+                  </div>
+
+                  {viewLoading ? (
+                    <div style={styles.emptyFiles}>Loading committed files…</div>
+                  ) : viewError ? (
+                    <div style={{ ...styles.emptyFiles, color: "#ff6b6b" }}>
+                      {viewError}
+                    </div>
+                  ) : !viewCommitHash ? (
                     <div style={styles.emptyFiles}>
-                      {files.length === 0
-                        ? "No files in this repository yet."
+                      No accepted commits yet. Files shown here once a commit is approved.
+                    </div>
+                  ) : filteredViewFiles.length === 0 ? (
+                    <div style={styles.emptyFiles}>
+                      {viewFiles.length === 0
+                        ? "No files in this commit."
                         : "No files match your search."}
                     </div>
                   ) : (
                     <ul style={styles.fileList}>
                       <li style={styles.fileHeaderRow}>
-                        <span style={styles.colName}>Name</span>
+                        <span style={styles.colName}>Path</span>
                         <span style={styles.colSize}>Size</span>
-                        <span style={styles.colDate}>Updated</span>
+                        <span style={styles.colDate}>Type</span>
                       </li>
-                      {filteredFiles.map((f) => (
-                        <li key={f.name} style={styles.fileRow}>
-                          <span style={styles.colName}>{f.name}</span>
+                      {filteredViewFiles.map((f) => (
+                        <li key={f.path} style={styles.fileRow}>
+                          <span style={styles.colName}>{f.path}</span>
                           <span style={styles.colSize}>{formatSize(f.size)}</span>
-                          <span style={styles.colDate}>{formatDate(f.updated_at)}</span>
+                          <span style={styles.colDate}>{f.content_type}</span>
                         </li>
                       ))}
                     </ul>
@@ -726,6 +1365,23 @@ const styles: { [key: string]: CSSProperties } = {
     color: MUTED,
     textTransform: "uppercase",
     letterSpacing: 1,
+  },
+  collapseBtn: {
+    background: "transparent",
+    border: "none",
+    padding: 0,
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    cursor: "pointer",
+    color: MUTED,
+  },
+  collapseArrow: {
+    fontSize: 10,
+    color: MUTED,
+    width: 12,
+    display: "inline-block",
+    textAlign: "center" as const,
   },
   searchInput: {
     padding: "8px 10px",
@@ -860,6 +1516,26 @@ const styles: { [key: string]: CSSProperties } = {
     overflowY: "auto",
     padding: 10,
   },
+  viewBanner: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "6px 8px",
+    marginBottom: 8,
+    borderBottom: `1px solid ${BORDER}`,
+  },
+  viewBannerLabel: {
+    fontSize: 11,
+    color: MUTED,
+    textTransform: "uppercase" as const,
+    letterSpacing: 1,
+  },
+  viewBannerHash: {
+    fontFamily: "monospace",
+    fontSize: 12,
+    color: "#4fc3f7",
+    flex: 1,
+  },
   emptyFiles: {
     height: "100%",
     display: "flex",
@@ -905,8 +1581,9 @@ const styles: { [key: string]: CSSProperties } = {
   },
   draftsHeader: {
     display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 4,
   },
   refreshBtn: {
     background: "transparent",
@@ -994,9 +1671,141 @@ const styles: { [key: string]: CSSProperties } = {
     borderColor: PURPLE,
     color: "white",
   },
+  draftItemCommit: {
+    cursor: "pointer",
+    textAlign: "left",
+    width: "100%",
+    borderColor: "#4fc3f7",
+    color: "#4fc3f7",
+  },
   deleteHint: {
     fontSize: 11,
     color: "#ff6b6b",
     padding: "4px 0",
+  },
+  pendingSection: {
+    marginTop: 20,
+    paddingTop: 12,
+    borderTop: `1px solid ${BORDER}`,
+  },
+  pendingHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  commitsState: {
+    fontSize: 12,
+    color: MUTED,
+    padding: "8px 0",
+  },
+  commitsList: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+  },
+  commitItem: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "8px 0",
+    borderBottom: `1px solid ${BORDER}`,
+    fontSize: 12,
+    gap: 8,
+  },
+  commitContent: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    flex: 1,
+    minWidth: 0,
+  },
+  commitContentLink: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 2,
+    flex: 1,
+    minWidth: 0,
+    textDecoration: "none",
+    color: "inherit",
+    cursor: "pointer",
+    padding: "4px 6px",
+    borderRadius: 4,
+    transition: "background-color 0.15s",
+  },
+  commitHashSmall: {
+    fontFamily: "monospace",
+    color: "#4fc3f7",
+  },
+  commitStatus: {
+    fontSize: 9,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+    padding: "1px 6px",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    fontWeight: 600,
+  },
+  commitSummary: {
+    color: TEXT,
+    fontSize: 12,
+    fontWeight: 500,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+  },
+  commitMeta: {
+    display: "flex",
+    gap: 6,
+    fontSize: 10,
+    color: MUTED,
+  },
+  commitOwner: {
+    fontFamily: "monospace",
+  },
+  commitDate: {},
+  commitActions: {
+    position: "relative",
+    display: "flex",
+    alignItems: "center",
+  },
+  dotsBtn: {
+    background: "transparent",
+    border: "none",
+    color: TEXT,
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "0 4px",
+    lineHeight: 1,
+  },
+  commitMenu: {
+    position: "absolute",
+    right: 0,
+    top: "100%",
+    background: PANEL,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 6,
+    minWidth: 100,
+    zIndex: 10,
+    boxShadow: "0 4px 10px rgba(0,0,0,0.4)",
+    overflow: "hidden",
+  },
+  menuItem: {
+    display: "block",
+    width: "100%",
+    padding: "8px 12px",
+    background: "transparent",
+    border: "none",
+    color: TEXT,
+    textAlign: "left",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+  menuItemSuccess: {
+    color: "#51cf66",
+  },
+  menuItemDanger: {
+    color: "#ff6b6b",
   },
 };
