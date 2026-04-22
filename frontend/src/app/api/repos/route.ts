@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
+const IDENTITY_URL =
+  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
+
+
 export async function GET(req: Request) {
   const authHeader = req.headers.get("authorization");
 
   try {
-    const response = await fetch("http://localhost:8001/v1/repos", {
+    const response = await fetch(`${IDENTITY_URL}/v1/repos`, {
       headers: {
         Authorization: authHeader || "",
       },
@@ -26,7 +30,7 @@ export async function POST(req: Request) {
   const authHeader = req.headers.get("authorization");
 
   try {
-    const response = await fetch("http://localhost:8001/v1/repos", {
+    const response = await fetch(`${IDENTITY_URL}/v1/repos`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

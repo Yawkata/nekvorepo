@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
+const IDENTITY_URL =
+  process.env.IDENTITY_SERVICE_URL || "http://localhost:8001";
+
+
 export async function GET(req: Request) {
   const authHeader = req.headers.get("authorization");
 
   try {
-    const response = await fetch("http://localhost:8001/v1/auth/verify-me", {
+    const response = await fetch(`${IDENTITY_URL}/v1/auth/verify-me`, {
       headers: {
         Authorization: authHeader || "",
       },

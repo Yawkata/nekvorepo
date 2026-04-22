@@ -147,6 +147,42 @@ services:
       retries: 3
       start_period: 15s
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      # Server-side (Next.js API routes) — uses Docker DNS + internal ports.
+      - IDENTITY_SERVICE_URL=http://identity-service:8000
+      - REPO_SERVICE_URL=http://repo-service:8000
+      - WORKFLOW_SERVICE_URL=http://workflow-service:8000
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      repo-service:
+        condition: service_healthy
+      workflow-service:
+        condition: service_healthy
+    networks:
+      - chrono_network
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 networks:
   chrono_network:
     driver: bridge
