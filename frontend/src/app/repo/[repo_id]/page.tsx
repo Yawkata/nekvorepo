@@ -23,7 +23,7 @@ type Draft = {
 
 type Commit = {
   commit_hash: string;
-  status: "pending" | "approved" | "rejected" | "sibling_rejected";
+  status: CommitStatusValue;
   commit_summary: string;
   commit_description?: string;
   changes_summary?: string;
@@ -32,6 +32,35 @@ type Commit = {
   draft_id?: string;
   reviewer_comment?: string;
   parent_commit_hash?: string;
+};
+
+type CommitStatusValue =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "sibling_rejected"
+  | "cancelled";
+
+type CommitStatusInfo = {
+  commit_hash: string;
+  status: CommitStatusValue;
+  reviewer_comment?: string | null;
+  timestamp?: string;
+};
+
+type Invite = {
+  token_id: string;
+  invited_email: string;
+  role: string;
+  created_at?: string;
+  expires_at?: string;
+};
+
+type Member = {
+  user_id: string;
+  email?: string | null;
+  role: string;
+  joined_at?: string;
 };
 
 type Repo = {
@@ -57,7 +86,7 @@ type ToolbarAction = {
 
 function actionsForRole(
   role: string | undefined,
-  handlers: { onNewDraft: () => void }
+  handlers: { onNewDraft: () => void; onInviteMember: () => void; inviting: boolean }
 ): ToolbarAction[] {
   const normalized = (role || "").toLowerCase();
   const newDraft: ToolbarAction = {
@@ -65,11 +94,17 @@ function actionsForRole(
     variant: "primary",
     onClick: handlers.onNewDraft,
   };
+  const inviteMember: ToolbarAction = {
+    label: handlers.inviting ? "Inviting..." : "Invite Member",
+    variant: "secondary",
+    onClick: handlers.onInviteMember,
+  };
   switch (normalized) {
     case "admin":
       return [
         newDraft,
         { label: "Review Queue", variant: "secondary" },
+        inviteMember,
         { label: "Manage", variant: "secondary" },
         { label: "View Current", variant: "secondary" },
         { label: "Download ZIP", variant: "secondary" },
@@ -84,6 +119,7 @@ function actionsForRole(
     case "reviewer":
       return [
         { label: "Review Queue", variant: "primary" },
+        { label: "View Current", variant: "secondary" },
         { label: "Download ZIP", variant: "secondary" },
       ];
     case "reader":
@@ -185,6 +221,10 @@ export default function RepoPage() {
   const [approvingHash, setApprovingHash] = useState<string | null>(null);
   const [rejectingHash, setRejectingHash] = useState<string | null>(null);
   const [openCommitMenu, setOpenCommitMenu] = useState<string | null>(null);
+  const [commitStatuses, setCommitStatuses] = useState<
+    Record<string, CommitStatusInfo>
+  >({});
+  const [statusLoadingHash, setStatusLoadingHash] = useState<string | null>(null);
 
   // Commit history state
   const [history, setHistory] = useState<Commit[]>([]);
@@ -217,6 +257,347 @@ export default function RepoPage() {
   };
   const [openedFile, setOpenedFile] = useState<OpenFile | null>(null);
   const [openingFilePath, setOpeningFilePath] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false);
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [invitesLoading, setInvitesLoading] = useState(false);
+  const [invitesError, setInvitesError] = useState<string | null>(null);
+  const [invitesOpen, setInvitesOpen] = useState(true);
+  const [acceptingInviteId, setAcceptingInviteId] = useState<string | null>(null);
+  const [resendingInviteId, setResendingInviteId] = useState<string | null>(null);
+  const [revokingInviteId, setRevokingInviteId] = useState<string | null>(null);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [membersOpen, setMembersOpen] = useState(true);
+  const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+
+  const isAdmin = String(repo?.role || "").toLowerCase() === "admin";
+  const normalizedCurrentUserEmail = currentUserEmail?.trim().toLowerCase();
+
+  async function loadInvites() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setInvitesLoading(true);
+    setInvitesError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/invites`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : [];
+      if (!res.ok) {
+        setInvitesError(extractErrorMessage(data, "Failed to load invites"));
+        return;
+      }
+      setInvites(Array.isArray(data) ? data : []);
+    } catch {
+      setInvitesError("Failed to connect to server");
+    } finally {
+      setInvitesLoading(false);
+    }
+  }
+
+  async function loadMembers() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setMembersLoading(true);
+    setMembersError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/members`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : [];
+      if (!res.ok) {
+        setMembersError(extractErrorMessage(data, "Failed to load members"));
+        return;
+      }
+      setMembers(Array.isArray(data) ? data : []);
+    } catch {
+      setMembersError("Failed to connect to server");
+    } finally {
+      setMembersLoading(false);
+    }
+  }
+
+  async function handleInviteMember() {
+    if (inviting || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const email = window.prompt("Email address to invite:", "")?.trim();
+    if (!email) return;
+
+    const roleInput = window
+      .prompt("Role for the invited member: reader, author, reviewer, or admin", "reader")
+      ?.trim()
+      .toLowerCase();
+    if (!roleInput) return;
+    if (!["reader", "author", "reviewer", "admin"].includes(roleInput)) {
+      alert("Role must be reader, author, reviewer, or admin.");
+      return;
+    }
+
+    setInviting(true);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/invites`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email, role: roleInput }),
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to send invite"));
+        return;
+      }
+      await loadInvites();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  async function handleAcceptInvite(invite: Invite) {
+    if (acceptingInviteId || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    setAcceptingInviteId(invite.token_id);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/invites/${invite.token_id}/accept`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to accept invite"));
+        return;
+      }
+      setInvites((prev) => prev.filter((item) => item.token_id !== invite.token_id));
+      await loadMembers();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setAcceptingInviteId(null);
+    }
+  }
+
+  async function handleResendInvite(invite: Invite) {
+    if (resendingInviteId || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    setResendingInviteId(invite.token_id);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/invites/${invite.token_id}/resend`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to resend invite"));
+        return;
+      }
+      await loadInvites();
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setResendingInviteId(null);
+    }
+  }
+
+  async function handleRevokeInvite(invite: Invite) {
+    if (revokingInviteId || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    if (!confirm(`Revoke invite for ${invite.invited_email}?`)) return;
+
+    setRevokingInviteId(invite.token_id);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/invites/${invite.token_id}/revoke`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to revoke invite"));
+        return;
+      }
+      setInvites((prev) => prev.filter((item) => item.token_id !== invite.token_id));
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setRevokingInviteId(null);
+    }
+  }
+
+  async function handleChangeMemberRole(member: Member) {
+    if (changingRoleUserId || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const roleInput = window
+      .prompt("New role: reader, author, reviewer, or admin", member.role)
+      ?.trim()
+      .toLowerCase();
+    if (!roleInput || roleInput === member.role) return;
+    if (!["reader", "author", "reviewer", "admin"].includes(roleInput)) {
+      alert("Role must be reader, author, reviewer, or admin.");
+      return;
+    }
+
+    setChangingRoleUserId(member.user_id);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/members/${encodeURIComponent(member.user_id)}/role`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ role: roleInput }),
+        }
+      );
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to change role"));
+        return;
+      }
+      setMembers((prev) =>
+        prev.map((item) =>
+          item.user_id === member.user_id ? { ...item, role: data.role || roleInput } : item
+        )
+      );
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setChangingRoleUserId(null);
+    }
+  }
+
+  async function handleRemoveMember(member: Member) {
+    if (removingMemberId || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    const label = member.email || member.user_id;
+    if (!confirm(`Remove ${label} from this repository?`)) return;
+
+    setRemovingMemberId(member.user_id);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/members/${encodeURIComponent(member.user_id)}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to remove member"));
+        return;
+      }
+      setMembers((prev) => prev.filter((item) => item.user_id !== member.user_id));
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setRemovingMemberId(null);
+    }
+  }
 
   async function handleRenameDraft(draftId: string, currentTitle: string) {
     const token = localStorage.getItem("token");
@@ -344,6 +725,74 @@ export default function RepoPage() {
     }
   }
 
+  async function fetchCommitStatus(
+    commitHash: string,
+    token: string
+  ): Promise<CommitStatusInfo | null> {
+    const res = await fetch(`/api/repos/${repoId}/commits/${commitHash}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      router.push("/login");
+      return null;
+    }
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) return null;
+    return data as CommitStatusInfo;
+  }
+
+  async function refreshCommitStatus(commitHash: string) {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    setStatusLoadingHash(commitHash);
+    try {
+      const data = await fetchCommitStatus(commitHash, token);
+      if (!data) return;
+      setCommitStatuses((prev) => ({
+        ...prev,
+        [commitHash]: data,
+      }));
+      if (data.status !== "pending") {
+        setCommits((prev) =>
+          prev.map((commit) =>
+            commit.commit_hash === commitHash
+              ? {
+                  ...commit,
+                  status: data.status,
+                  reviewer_comment: data.reviewer_comment ?? undefined,
+                  timestamp: data.timestamp ?? commit.timestamp,
+                }
+              : commit
+          )
+        );
+      }
+    } catch {
+      alert("Failed to load commit status");
+    } finally {
+      setStatusLoadingHash(null);
+    }
+  }
+
+  async function refreshCommitStatuses(list: Commit[]) {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId || list.length === 0) return;
+
+    const results = await Promise.all(
+      list.map((commit) =>
+        fetchCommitStatus(commit.commit_hash, token).catch(() => null)
+      )
+    );
+    const next: Record<string, CommitStatusInfo> = {};
+    results.forEach((result) => {
+      if (result) next[result.commit_hash] = result;
+    });
+    if (Object.keys(next).length > 0) {
+      setCommitStatuses((prev) => ({ ...prev, ...next }));
+    }
+  }
+
   async function loadCommits() {
     const token = localStorage.getItem("token");
     if (!token || !repoId) return;
@@ -376,6 +825,20 @@ export default function RepoPage() {
         ? data.commits
         : [];
       setCommits(list);
+      setCommitStatuses(
+        Object.fromEntries(
+          (list as Commit[]).map((commit) => [
+            commit.commit_hash,
+            {
+              commit_hash: commit.commit_hash,
+              status: commit.status,
+              reviewer_comment: commit.reviewer_comment ?? null,
+              timestamp: commit.timestamp,
+            },
+          ])
+        )
+      );
+      void refreshCommitStatuses(list as Commit[]);
     } catch {
       setCommitsError("Failed to connect to server");
     } finally {
@@ -809,6 +1272,7 @@ export default function RepoPage() {
       router.push("/login");
       return;
     }
+    setCurrentUserEmail(localStorage.getItem("email"));
     if (!repoId) return;
     if (!UUID_RE.test(repoId)) {
       setError(`Invalid repository ID: "${repoId}"`);
@@ -843,6 +1307,17 @@ export default function RepoPage() {
     loadView();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId, router]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      loadInvites();
+      loadMembers();
+    } else {
+      setInvites([]);
+      setMembers([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, repoId]);
 
   const files: RepoFile[] = repo?.files ?? [];
 
@@ -1255,6 +1730,18 @@ export default function RepoPage() {
                     const isApproving = approvingHash === commit.commit_hash;
                     const isRejecting = rejectingHash === commit.commit_hash;
                     const menuOpen = openCommitMenu === commit.commit_hash;
+                    const statusInfo = commitStatuses[commit.commit_hash];
+                    const visibleStatus = statusInfo?.status || commit.status;
+                    const statusColor =
+                      visibleStatus === "approved"
+                        ? "#51cf66"
+                        : visibleStatus === "rejected"
+                        ? "#ff6b6b"
+                        : visibleStatus === "sibling_rejected"
+                        ? "#ffa94d"
+                        : visibleStatus === "cancelled"
+                        ? MUTED
+                        : "#4fc3f7";
                     return (
                       <li key={commit.commit_hash} style={styles.commitItem}>
                         {commit.draft_id ? (
@@ -1265,6 +1752,15 @@ export default function RepoPage() {
                           >
                             <span style={styles.commitSummary}>{commit.commit_summary}</span>
                             <span style={styles.commitMeta}>
+                              <span
+                                style={{
+                                  ...styles.commitStatus,
+                                  color: statusColor,
+                                  borderColor: statusColor,
+                                }}
+                              >
+                                {visibleStatus}
+                              </span>
                               <span style={styles.commitOwner}>{commit.owner_id.substring(0, 8)}</span>
                               <span style={styles.commitDate}>{formatDateTime(commit.timestamp)}</span>
                               <span style={styles.commitHashSmall}>
@@ -1276,12 +1772,41 @@ export default function RepoPage() {
                           <div style={styles.commitContent}>
                             <span style={styles.commitSummary}>{commit.commit_summary}</span>
                             <span style={styles.commitMeta}>
+                              <span
+                                style={{
+                                  ...styles.commitStatus,
+                                  color: statusColor,
+                                  borderColor: statusColor,
+                                }}
+                              >
+                                {visibleStatus}
+                              </span>
                               <span style={styles.commitOwner}>{commit.owner_id.substring(0, 8)}</span>
                               <span style={styles.commitDate}>{formatDateTime(commit.timestamp)}</span>
                             </span>
+                            {statusInfo?.reviewer_comment && (
+                              <span style={styles.commitReviewerComment}>
+                                {statusInfo.reviewer_comment}
+                              </span>
+                            )}
                           </div>
                         )}
                         <div style={styles.commitActions}>
+                          <button
+                            onClick={() => refreshCommitStatus(commit.commit_hash)}
+                            disabled={statusLoadingHash === commit.commit_hash}
+                            style={{
+                              ...styles.statusPollButton,
+                              ...(statusLoadingHash === commit.commit_hash
+                                ? { opacity: 0.6, cursor: "wait" }
+                                : {}),
+                            }}
+                            title="Check commit status"
+                          >
+                            {statusLoadingHash === commit.commit_hash
+                              ? "..."
+                              : "Status"}
+                          </button>
                           <button
                             onClick={() =>
                               setOpenCommitMenu((cur) =>
@@ -1470,6 +1995,8 @@ export default function RepoPage() {
                 <div style={styles.filesToolbar}>
                   {actionsForRole(repo.role, {
                     onNewDraft: handleNewDraft,
+                    onInviteMember: handleInviteMember,
+                    inviting,
                   }).map((action) => {
                     const isNewDraft = action.label === "+ New Draft";
                     const disabled = isNewDraft && creatingDraft;
@@ -1557,6 +2084,205 @@ export default function RepoPage() {
             </>
           ) : null}
         </main>
+
+        {isAdmin && (
+          <aside style={{ ...styles.sidebar, ...styles.rightSidebar }}>
+            <div style={styles.rightSectionHeader}>
+              <label style={styles.sidebarLabel}>Invites</label>
+              <div style={styles.headerActions}>
+                {invitesOpen && (
+                  <button
+                    onClick={loadInvites}
+                    style={{ ...styles.refreshBtn, ...styles.smallTextBtn }}
+                    title="Refresh invites"
+                  >
+                    Reload
+                  </button>
+                )}
+                <button
+                  onClick={() => setInvitesOpen((v) => !v)}
+                  style={{ ...styles.refreshBtn, ...styles.smallTextBtn }}
+                  title={invitesOpen ? "Hide invites" : "Show invites"}
+                >
+                  {invitesOpen ? "Hide" : "Show"}
+                </button>
+              </div>
+            </div>
+
+            {invitesOpen && (
+              <div style={styles.rightPanel}>
+                {invitesLoading ? (
+                  <div style={styles.draftsState}>Loading...</div>
+                ) : invitesError ? (
+                  <div style={{ ...styles.draftsState, color: "#ff6b6b" }}>
+                    {invitesError}
+                  </div>
+                ) : invites.length === 0 ? (
+                  <div style={styles.draftsState}>No pending invites.</div>
+                ) : (
+                  <ul style={styles.draftsList}>
+                    {invites.map((invite) => (
+                      <li key={invite.token_id} style={styles.inviteItem}>
+                        <span style={styles.draftTitle}>{invite.invited_email}</span>
+                        <span style={styles.draftMeta}>
+                          <span style={styles.draftStatus}>{invite.role}</span>
+                          <span style={styles.draftDate}>
+                            Expires {formatDate(invite.expires_at)}
+                          </span>
+                        </span>
+                        <div style={styles.inviteActions}>
+                          {normalizedCurrentUserEmail ===
+                            invite.invited_email.trim().toLowerCase() && (
+                            <button
+                              onClick={() => handleAcceptInvite(invite)}
+                              disabled={
+                                acceptingInviteId === invite.token_id ||
+                                resendingInviteId === invite.token_id ||
+                                revokingInviteId === invite.token_id
+                              }
+                              style={{
+                                ...styles.inviteActionButton,
+                                ...styles.inviteAcceptButton,
+                                ...(acceptingInviteId === invite.token_id
+                                  ? { opacity: 0.6, cursor: "wait" }
+                                  : {}),
+                              }}
+                            >
+                              {acceptingInviteId === invite.token_id
+                                ? "Accepting..."
+                                : "Accept"}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleResendInvite(invite)}
+                            disabled={
+                              acceptingInviteId === invite.token_id ||
+                              resendingInviteId === invite.token_id ||
+                              revokingInviteId === invite.token_id
+                            }
+                            style={{
+                              ...styles.inviteActionButton,
+                              ...(resendingInviteId === invite.token_id
+                                ? { opacity: 0.6, cursor: "wait" }
+                                : {}),
+                            }}
+                          >
+                            {resendingInviteId === invite.token_id
+                              ? "Resending..."
+                              : "Resend"}
+                          </button>
+                          <button
+                            onClick={() => handleRevokeInvite(invite)}
+                            disabled={
+                              acceptingInviteId === invite.token_id ||
+                              resendingInviteId === invite.token_id ||
+                              revokingInviteId === invite.token_id
+                            }
+                            style={{
+                              ...styles.inviteActionButton,
+                              ...styles.inviteDangerButton,
+                              ...(revokingInviteId === invite.token_id
+                                ? { opacity: 0.6, cursor: "wait" }
+                                : {}),
+                            }}
+                          >
+                            {revokingInviteId === invite.token_id
+                              ? "Revoking..."
+                              : "Revoke"}
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div style={styles.membersSection}>
+              <div style={styles.rightSectionHeader}>
+                <label style={styles.sidebarLabel}>Members</label>
+                <div style={styles.headerActions}>
+                  {membersOpen && (
+                    <button
+                      onClick={loadMembers}
+                      style={{ ...styles.refreshBtn, ...styles.smallTextBtn }}
+                      title="Refresh members"
+                    >
+                      Reload
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setMembersOpen((v) => !v)}
+                    style={{ ...styles.refreshBtn, ...styles.smallTextBtn }}
+                    title={membersOpen ? "Hide members" : "Show members"}
+                  >
+                    {membersOpen ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+
+              {membersOpen && (
+                <div style={styles.rightPanel}>
+                  {membersLoading ? (
+                    <div style={styles.draftsState}>Loading...</div>
+                  ) : membersError ? (
+                    <div style={{ ...styles.draftsState, color: "#ff6b6b" }}>
+                      {membersError}
+                    </div>
+                  ) : members.length === 0 ? (
+                    <div style={styles.draftsState}>No members yet.</div>
+                  ) : (
+                    <ul style={styles.draftsList}>
+                      {members.map((member) => (
+                        <li key={member.user_id} style={styles.inviteItem}>
+                          <div style={styles.memberTitleRow}>
+                            <span style={styles.draftTitle}>
+                              {member.email || member.user_id}
+                            </span>
+                            <button
+                              onClick={() => handleRemoveMember(member)}
+                              disabled={removingMemberId === member.user_id}
+                              style={{
+                                ...styles.memberRemoveButton,
+                                ...(removingMemberId === member.user_id
+                                  ? { opacity: 0.6, cursor: "wait" }
+                                  : {}),
+                              }}
+                            >
+                              {removingMemberId === member.user_id
+                                ? "Removing..."
+                                : "Remove"}
+                            </button>
+                          </div>
+                          <span style={styles.draftMeta}>
+                            <button
+                              onClick={() => handleChangeMemberRole(member)}
+                              disabled={changingRoleUserId === member.user_id}
+                              style={{
+                                ...styles.roleButton,
+                                ...(changingRoleUserId === member.user_id
+                                  ? { opacity: 0.6, cursor: "wait" }
+                                  : {}),
+                              }}
+                              title="Change member role"
+                            >
+                              {changingRoleUserId === member.user_id
+                                ? "Changing..."
+                                : member.role}
+                            </button>
+                            <span style={styles.draftDate}>
+                              Joined {formatDate(member.joined_at)}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* FILE VIEWER MODAL */}
@@ -1678,6 +2404,10 @@ const styles: { [key: string]: CSSProperties } = {
     display: "flex",
     flexDirection: "column",
     gap: 10,
+  },
+  rightSidebar: {
+    borderRight: "none",
+    borderLeft: `1px solid ${PURPLE}`,
   },
   sidebarLabel: {
     fontSize: 12,
@@ -2019,6 +2749,9 @@ const styles: { [key: string]: CSSProperties } = {
   iconBtn: {
     width: 25,
   },
+  smallTextBtn: {
+    width: 52,
+  },
   modeBtn: {
     width: 73,
   },
@@ -2092,6 +2825,91 @@ const styles: { [key: string]: CSSProperties } = {
     borderColor: "#4fc3f7",
     color: "#4fc3f7",
   },
+  rightSectionHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  headerActions: {
+    display: "flex",
+    gap: 4,
+  },
+  rightPanel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    overflowY: "auto",
+  },
+  membersSection: {
+    marginTop: 20,
+    paddingTop: 15,
+    borderTop: `1px solid ${BORDER}`,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  inviteItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    padding: "8px 10px",
+    borderRadius: 6,
+    background: PANEL,
+    border: `1px solid ${BORDER}`,
+    color: TEXT,
+  },
+  inviteActions: {
+    display: "flex",
+    gap: 6,
+    marginTop: 4,
+    flexWrap: "wrap",
+  },
+  inviteActionButton: {
+    padding: "5px 9px",
+    borderRadius: 4,
+    border: `1px solid ${BORDER}`,
+    background: "transparent",
+    color: TEXT,
+    cursor: "pointer",
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  inviteAcceptButton: {
+    borderColor: PURPLE,
+    color: "white",
+  },
+  inviteDangerButton: {
+    borderColor: "#ff6b6b",
+    color: "#ff6b6b",
+  },
+  memberTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  memberRemoveButton: {
+    flexShrink: 0,
+    padding: "4px 7px",
+    borderRadius: 4,
+    border: "1px solid #ff6b6b",
+    background: "transparent",
+    color: "#ff6b6b",
+    cursor: "pointer",
+    fontSize: 10,
+    fontWeight: 700,
+  },
+  roleButton: {
+    padding: "1px 6px",
+    borderRadius: 10,
+    border: `1px solid ${PURPLE}`,
+    background: "transparent",
+    color: PURPLE,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    fontSize: 11,
+    cursor: "pointer",
+  },
   deleteHint: {
     fontSize: 11,
     color: "#ff6b6b",
@@ -2160,6 +2978,23 @@ const styles: { [key: string]: CSSProperties } = {
     borderWidth: 1,
     borderStyle: "solid" as const,
     fontWeight: 600,
+  },
+  statusPollButton: {
+    background: "transparent",
+    border: `1px solid ${BORDER}`,
+    color: TEXT,
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 10,
+    height: 22,
+    padding: "0 7px",
+  },
+  commitReviewerComment: {
+    color: "#ffb86c",
+    fontSize: 10,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   commitSummary: {
     color: TEXT,
