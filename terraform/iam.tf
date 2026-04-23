@@ -2,9 +2,9 @@
 # IAM — per-service roles (least-privilege, Well-Architected Security pillar)
 #
 # Each microservice gets its own IAM role so that a compromise of one service
-# cannot be used to escalate into another.  The assume_role principal is set
-# to ec2.amazonaws.com for local/Docker dev; swap to the EKS OIDC provider
-# when moving to Kubernetes.
+# cannot be used to escalate into another. Trust principal is pods.eks.amazonaws.com
+# (EKS Pod Identity) — mapped to a k8s ServiceAccount via
+# aws_eks_pod_identity_association resources in pod_identity.tf.
 ###############################################################################
 
 # ---------------------------------------------------------------------------
@@ -15,15 +15,17 @@
 resource "aws_iam_role" "identity_service_role" {
   name = "${var.project_name}-identity-service-role"
 
+  # EKS Pod Identity trust. sts:TagSession is REQUIRED — the pod-identity
+  # agent tags the assumed session with cluster/namespace/SA so CloudTrail
+  # attributes every AWS call to a specific pod. Without TagSession, the
+  # agent's AssumeRole call is silently rejected.
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com" # TODO: replace with EKS OIDC provider ARN for production
-        }
+        Effect    = "Allow"
+        Action    = ["sts:AssumeRole", "sts:TagSession"]
+        Principal = { Service = "pods.eks.amazonaws.com" }
       },
     ]
   })
@@ -110,11 +112,9 @@ resource "aws_iam_role" "repo_service_role" {
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
+        Effect    = "Allow"
+        Action    = ["sts:AssumeRole", "sts:TagSession"]
+        Principal = { Service = "pods.eks.amazonaws.com" }
       },
     ]
   })
@@ -184,11 +184,9 @@ resource "aws_iam_role" "workflow_service_role" {
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
+        Effect    = "Allow"
+        Action    = ["sts:AssumeRole", "sts:TagSession"]
+        Principal = { Service = "pods.eks.amazonaws.com" }
       },
     ]
   })

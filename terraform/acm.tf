@@ -61,8 +61,16 @@ resource "aws_route53_record" "acm_validation" {
 # the domain, the records exist in the zone; issuance just stays PENDING until
 # you delegate NS at the registrar. At that point ACM finishes within minutes
 # with zero further Terraform action needed.
+# Blocks apply until ACM reports ISSUED. Only enable this AFTER you have
+# registered the domain and pasted the NS records into your registrar; until
+# delegation is complete, ACM cannot see the validation CNAMEs and this
+# resource will time out after 60 minutes, failing the pipeline.
+#
+# The certificate and Route 53 validation records above are created
+# unconditionally (so they exist when you need them); only the blocking
+# wait is gated.
 resource "aws_acm_certificate_validation" "primary" {
-  count = local.dns_enabled ? 1 : 0
+  count = local.dns_enabled && var.await_acm_validation ? 1 : 0
 
   certificate_arn         = aws_acm_certificate.primary[0].arn
   validation_record_fqdns = [for r in aws_route53_record.acm_validation : r.fqdn]

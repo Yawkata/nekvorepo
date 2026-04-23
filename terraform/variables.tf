@@ -34,11 +34,17 @@ variable "frontend_url" {
 variable "domain_name" {
   type        = string
   description = "Apex domain you intend to register (e.g. chronovcs.com). The Route53 hosted zone, DNSSEC, and ACM certificate are provisioned for this domain and its wildcard subdomain. No trailing dot. Leave blank before a domain is chosen — DNS/ACM resources will be skipped."
-  default     = "chronovcs.com"
+  default     = ""
 }
 
 variable "environment" {
   type        = string
   description = "Deployment environment (staging or prod). Used as a tag on new resources."
   default     = "staging"
+}
+
+variable "await_acm_validation" {
+  type        = bool
+  description = "If true, Terraform blocks apply until ACM finishes DNS validation. Requires the domain's NS records to be delegated at the registrar first. Leave false until the domain is registered and delegated, otherwise apply will hang for 60 minutes and fail."
+  default     = false
 }
