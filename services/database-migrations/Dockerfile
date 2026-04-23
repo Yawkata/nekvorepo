@@ -41,6 +41,7 @@ COPY --chown=nonroot:nonroot services/shared                         /app/shared
 COPY --chown=nonroot:nonroot services/database-migrations/migrations /app/migrations
 COPY --chown=nonroot:nonroot services/database-migrations/alembic.ini /app/alembic.ini
 COPY --chown=nonroot:nonroot services/database-migrations/init_roles.py /app/init_roles.py
+COPY --chown=nonroot:nonroot services/database-migrations/entrypoint.py /app/entrypoint.py
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app" \
@@ -51,4 +52,4 @@ USER nonroot
 
 # No HEALTHCHECK — one-shot migrator. docker-compose gates via service_completed_successfully.
 ENTRYPOINT []
-CMD ["/opt/venv/bin/alembic", "upgrade", "head"]
+CMD ["/opt/venv/bin/python", "/app/entrypoint.py"]

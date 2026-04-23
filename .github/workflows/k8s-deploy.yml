@@ -178,6 +178,9 @@ jobs:
         env:
           DB_PASSWORD: ${{ secrets.TF_VAR_DB_PASSWORD }}
           JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
+          IDENTITY_DB_PASSWORD: ${{ secrets.IDENTITY_DB_PASSWORD }}
+          REPO_DB_PASSWORD: ${{ secrets.REPO_DB_PASSWORD }}
+          WORKFLOW_DB_PASSWORD: ${{ secrets.WORKFLOW_DB_PASSWORD }}
         run: |
           set -euo pipefail
           cd terraform
@@ -198,6 +201,9 @@ jobs:
             --from-literal=DB_PORT=5432 \
             --from-literal=DB_NAME=chrono_vcs_db \
             --from-literal=DATABASE_URL="postgresql://postgres_admin:${DB_PASSWORD}@${DB_HOST}:5432/chrono_vcs_db" \
+            --from-literal=IDENTITY_DB_PASSWORD="$IDENTITY_DB_PASSWORD" \
+            --from-literal=REPO_DB_PASSWORD="$REPO_DB_PASSWORD" \
+            --from-literal=WORKFLOW_DB_PASSWORD="$WORKFLOW_DB_PASSWORD" \
             --dry-run=client -o yaml | kubectl apply -f -
 
           kubectl -n chrono-vcs create secret generic identity-cognito \
@@ -224,6 +230,7 @@ jobs:
       - name: Delete prior migration Job (templates are immutable)
         run: |
           kubectl -n chrono-vcs delete job db-migrate --ignore-not-found --wait=true
+          kubectl -n chrono-vcs wait --for=delete job/db-migrate --timeout=60s 2>/dev/null || true
 
       - name: Render + envsubst + apply
         run: |
