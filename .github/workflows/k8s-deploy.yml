@@ -224,13 +224,24 @@ jobs:
       - name: Render + envsubst + apply
         run: |
           set -euo pipefail
-          # envsubst replaces ${VAR} from the overlay kustomization with the
-          # TF-output values exported above. Any unset variable becomes empty
-          # (desired: missing domain -> blank hostname -> ALB rejects until set).
           kustomize build "k8s/overlays/${ENV_NAME}" \
-            | envsubst \
-            | tee /tmp/manifest.yaml \
-            | kubectl apply -f -
+            | envsubst > /tmp/manifest.yaml
+
+          # If no domain is set, the Ingress hostnames expand to
+          # "app-staging." which fails kube's RFC1123 validation. Strip
+          # Ingress resources from the manifest so the rest of the stack
+          # still deploys — devs can port-forward Services for smoke tests.
+          # Re-enable by setting repo variable DOMAIN_NAME.
+          if [ -z "${DOMAIN_NAME:-}" ]; then
+            echo "::warning::DOMAIN_NAME is empty — skipping Ingress apply."
+            python3 -c "import sys, yaml; \
+          docs = list(yaml.safe_load_all(open('/tmp/manifest.yaml'))); \
+          yaml.safe_dump_all([d for d in docs if d and d.get('kind') != 'Ingress'], sys.stdout)" \
+              > /tmp/manifest.filtered.yaml
+            mv /tmp/manifest.filtered.yaml /tmp/manifest.yaml
+          fi
+
+          kubectl apply -f /tmp/manifest.yaml
 
       - name: Run migrations
         run: |
