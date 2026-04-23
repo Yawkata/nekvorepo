@@ -17,6 +17,8 @@ type Draft = {
   id?: string;
   label?: string | null;
   status?: string;
+  base_commit_hash?: string | null;
+  commit_hash?: string | null;
   updated_at?: string;
   created_at?: string;
 };
@@ -46,6 +48,36 @@ type CommitStatusInfo = {
   status: CommitStatusValue;
   reviewer_comment?: string | null;
   timestamp?: string;
+};
+
+type RepoHead = {
+  repo_id: string;
+  latest_commit_hash: string | null;
+  commit_timestamp: string | null;
+};
+
+type ConflictMode = "rebase" | "sibling";
+
+type ConflictFile = {
+  path: string;
+  category: string;
+  has_draft_changes: boolean;
+  draft_hash?: string | null;
+  head_hash?: string | null;
+  base_hash?: string | null;
+};
+
+type ConflictResolution = "keep_mine" | "use_theirs";
+
+type ConflictReview = {
+  draft: Draft;
+  draftId: string;
+  draftTitle: string;
+  mode: ConflictMode;
+  pinnedHead: string;
+  baseCommitHash: string | null;
+  files: ConflictFile[];
+  resolutions: Record<string, ConflictResolution>;
 };
 
 type Invite = {
@@ -204,6 +236,11 @@ export default function RepoPage() {
   const repoId = params?.repo_id as string;
 
   const [repo, setRepo] = useState<Repo | null>(null);
+  const [repoHead, setRepoHead] = useState<RepoHead | null>(null);
+  const [conflictReview, setConflictReview] = useState<ConflictReview | null>(null);
+  const [conflictLoadingDraftId, setConflictLoadingDraftId] = useState<string | null>(null);
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  const [rebasingDraftId, setRebasingDraftId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -244,6 +281,7 @@ export default function RepoPage() {
   type ViewFile = { path: string; content_type: string; size: number };
   const [viewFiles, setViewFiles] = useState<ViewFile[]>([]);
   const [viewCommitHash, setViewCommitHash] = useState<string | null>(null);
+  const [selectedCommit, setSelectedCommit] = useState<Commit | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
@@ -280,6 +318,68 @@ export default function RepoPage() {
 
   const isAdmin = String(repo?.role || "").toLowerCase() === "admin";
   const normalizedCurrentUserEmail = currentUserEmail?.trim().toLowerCase();
+  const latestHeadHash = repoHead?.latest_commit_hash ?? null;
+  const staleDrafts = useMemo(
+    () => drafts.filter((draft) => isDraftStale(draft, latestHeadHash)),
+    [drafts, latestHeadHash]
+  );
+
+  function isDraftStale(draft: Draft, headHash: string | null): boolean {
+    if (draft.status === "needs_rebase" || draft.status === "sibling_rejected") {
+      return true;
+    }
+    if (!headHash) return false;
+    if (draft.status && !["editing", "rejected"].includes(draft.status)) {
+      return false;
+    }
+    return (draft.base_commit_hash ?? null) !== headHash;
+  }
+
+  function conflictModeForDraft(draft: Draft): ConflictMode {
+    return draft.status === "sibling_rejected" ? "sibling" : "rebase";
+  }
+
+  function isConflictActionRequired(file: ConflictFile): boolean {
+    return (
+      file.category === "conflict" ||
+      file.category === "type_collision" ||
+      (file.category === "deleted_in_head" && file.has_draft_changes)
+    );
+  }
+
+  function conflictCategoryColor(category: string): string {
+    switch (category) {
+      case "conflict":
+      case "type_collision":
+        return "#ff6b6b";
+      case "deleted_in_head":
+        return "#ffa94d";
+      case "added_in_head":
+        return "#4fc3f7";
+      case "no_conflict":
+        return "#51cf66";
+      default:
+        return MUTED;
+    }
+  }
+
+  function requiredConflictPaths(files: ConflictFile[]): string[] {
+    return files.filter(isConflictActionRequired).map((file) => file.path);
+  }
+
+  function setConflictResolution(path: string, resolution: ConflictResolution) {
+    setConflictReview((current) =>
+      current
+        ? {
+            ...current,
+            resolutions: {
+              ...current.resolutions,
+              [path]: resolution,
+            },
+          }
+        : current
+    );
+  }
 
   async function loadInvites() {
     const token = localStorage.getItem("token");
@@ -730,6 +830,210 @@ export default function RepoPage() {
     }
   }
 
+  async function loadRepoHead() {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId) return;
+
+    try {
+      const res = await fetch(`/api/repos/${repoId}/head`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const text = await res.text();
+      let data: unknown = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+      if (!res.ok) return;
+
+      const nextHead = data as RepoHead;
+      setRepoHead((prev) => {
+        const previousHash = prev?.latest_commit_hash ?? null;
+        const nextHash = nextHead.latest_commit_hash ?? null;
+        if (previousHash !== null && previousHash !== nextHash) {
+          void loadDrafts();
+          void loadHistory();
+          void loadView();
+        }
+        return nextHead;
+      });
+    } catch {
+      /* Keep polling quietly; the next interval can recover. */
+    }
+  }
+
+  async function handleOpenConflictReview(draft: Draft, title: string) {
+    const draftId = draft.draft_id ?? draft.id;
+    if (!draftId || !repoId) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    if (!latestHeadHash) {
+      alert("There is no accepted HEAD commit to review against yet.");
+      return;
+    }
+
+    const mode = conflictModeForDraft(draft);
+    setConflictLoadingDraftId(draftId);
+    setConflictError(null);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/conflicts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          draft_id: draftId,
+          head: latestHeadHash,
+          mode,
+        }),
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+
+      const text = await res.text();
+      let data: unknown = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+
+      if (!res.ok) {
+        const message = extractErrorMessage(
+          data,
+          "Failed to classify conflicts"
+        );
+        setConflictError(message);
+        alert(message);
+        return;
+      }
+
+      const result = data as {
+        base_commit_hash?: string | null;
+        head_commit_hash?: string;
+        files?: ConflictFile[];
+      };
+      setConflictReview({
+        draft,
+        draftId,
+        draftTitle: title,
+        mode,
+        pinnedHead: result.head_commit_hash || latestHeadHash,
+        baseCommitHash: result.base_commit_hash ?? draft.base_commit_hash ?? null,
+        files: Array.isArray(result.files) ? result.files : [],
+        resolutions: {},
+      });
+    } catch {
+      setConflictError("Failed to connect to server");
+      alert("Failed to connect to server");
+    } finally {
+      setConflictLoadingDraftId(null);
+    }
+  }
+
+  async function handleFinalizeRebase() {
+    if (!conflictReview || rebasingDraftId) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const requiredPaths = requiredConflictPaths(conflictReview.files);
+    const missing = requiredPaths.filter(
+      (path) => !conflictReview.resolutions[path]
+    );
+    if (missing.length > 0) {
+      setConflictError(
+        `Choose a resolution for ${missing.length} file${
+          missing.length === 1 ? "" : "s"
+        } before finalizing.`
+      );
+      return;
+    }
+
+    setRebasingDraftId(conflictReview.draftId);
+    setConflictError(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/drafts/${conflictReview.draftId}/rebase`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            expected_head_commit_hash: conflictReview.pinnedHead,
+            resolutions: requiredPaths.map((path) => ({
+              path,
+              resolution: conflictReview.resolutions[path],
+            })),
+          }),
+        }
+      );
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+
+      const text = await res.text();
+      let data: unknown = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        /* ignore parse errors */
+      }
+
+      if (res.status === 409) {
+        const detail = (data as { detail?: { error?: string; new_head_commit_hash?: string | null } }).detail;
+        if (detail?.error === "head_moved_again") {
+          setConflictError(
+            "HEAD advanced again while this review was open. Reloading the latest state."
+          );
+          setRepoHead((current) =>
+            current
+              ? {
+                  ...current,
+                  latest_commit_hash: detail.new_head_commit_hash ?? null,
+                }
+              : current
+          );
+          await loadDrafts();
+          await loadRepoHead();
+          return;
+        }
+      }
+
+      if (!res.ok) {
+        setConflictError(extractErrorMessage(data, "Failed to finalize rebase"));
+        return;
+      }
+
+      setConflictReview(null);
+      await loadDrafts();
+      await loadRepoHead();
+      await loadView();
+    } catch {
+      setConflictError("Failed to connect to server");
+    } finally {
+      setRebasingDraftId(null);
+    }
+  }
+
   async function fetchCommitStatus(
     commitHash: string,
     token: string
@@ -947,14 +1251,15 @@ export default function RepoPage() {
     }
   }
 
-  async function loadView() {
+  async function loadView(ref?: string | null, commit?: Commit | null) {
     const token = localStorage.getItem("token");
     if (!token || !repoId) return;
 
     setViewLoading(true);
     setViewError(null);
     try {
-      const res = await fetch(`/api/repos/${repoId}/view`, {
+      const query = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+      const res = await fetch(`/api/repos/${repoId}/view${query}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401) {
@@ -976,11 +1281,18 @@ export default function RepoPage() {
       }
       setViewFiles(Array.isArray(data.files) ? data.files : []);
       setViewCommitHash(data.commit_hash ?? null);
+      setSelectedCommit(commit ?? null);
     } catch {
       setViewError("Failed to connect to server");
     } finally {
       setViewLoading(false);
     }
+  }
+
+  function handleViewCommit(commit: Commit) {
+    setExpandedFolders(new Set([""]));
+    setOpenedFile(null);
+    void loadView(commit.commit_hash, commit);
   }
 
   async function loadHistory() {
@@ -1043,6 +1355,15 @@ export default function RepoPage() {
     const token = localStorage.getItem("token");
     if (!token) {
       router.push("/login");
+      return;
+    }
+
+    if (isDraftStale(draft, latestHeadHash)) {
+      const draftId = draft.draft_id ?? draft.id;
+      alert(
+        "This draft is behind the latest accepted commit. Open it to review conflicts before submitting."
+      );
+      if (draftId) router.push(`/repo/${repoId}/draft/${draftId}`);
       return;
     }
 
@@ -1354,6 +1675,35 @@ export default function RepoPage() {
     loadCommits();
     loadHistory();
     loadView();
+    loadRepoHead();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoId, router]);
+
+  useEffect(() => {
+    if (!repoId || !UUID_RE.test(repoId)) return;
+
+    let stopped = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const poll = () => {
+      if (!stopped && document.visibilityState === "visible") {
+        void loadRepoHead();
+      }
+    };
+
+    poll();
+    intervalId = setInterval(poll, 30_000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") poll();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      stopped = true;
+      if (intervalId) clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId, router]);
 
@@ -1638,6 +1988,14 @@ export default function RepoPage() {
                 Click a draft to submit it for review.
               </div>
             )}
+            {staleDrafts.length > 0 && (
+              <div style={styles.staleBanner}>
+                {staleDrafts.length === 1
+                  ? "1 draft is behind HEAD."
+                  : `${staleDrafts.length} drafts are behind HEAD.`}{" "}
+                Open stale drafts to review conflicts.
+              </div>
+            )}
 
             {draftsLoading ? (
               <div style={styles.draftsState}>Loading…</div>
@@ -1657,6 +2015,8 @@ export default function RepoPage() {
                     `Draft — ${formatDate(d.created_at)}`;
                   const isDeleting = deletingId === id;
                   const isRenaming = renamingId === id;
+                  const isStale = isDraftStale(d, latestHeadHash);
+                  const isConflictLoading = conflictLoadingDraftId === id;
 
                   const content = (
                     <>
@@ -1670,6 +2030,9 @@ export default function RepoPage() {
                       <span style={styles.draftMeta}>
                         {d.status && (
                           <span style={styles.draftStatus}>{d.status}</span>
+                        )}
+                        {isStale && (
+                          <span style={styles.staleStatus}>stale</span>
                         )}
                         <span style={styles.draftDate}>
                           {formatDate(d.updated_at || d.created_at)}
@@ -1715,6 +2078,7 @@ export default function RepoPage() {
                           style={{
                             ...styles.draftItem,
                             ...styles.draftItemCommit,
+                            ...(isStale ? styles.draftItemStale : {}),
                             ...(submittingCommit
                               ? { opacity: 0.6, cursor: "wait" }
                               : {}),
@@ -1723,12 +2087,35 @@ export default function RepoPage() {
                           {content}
                         </button>
                       ) : (
-                        <Link
-                          href={`/repo/${repoId}/draft/${id}`}
-                          style={styles.draftItem}
-                        >
-                          {content}
-                        </Link>
+                        isStale ? (
+                          <button
+                            onClick={() => handleOpenConflictReview(d, title)}
+                            disabled={isConflictLoading}
+                            style={{
+                              ...styles.draftItem,
+                              ...styles.draftConflictButton,
+                              ...styles.draftItemStale,
+                              ...(isConflictLoading
+                                ? { opacity: 0.6, cursor: "wait" }
+                                : {}),
+                            }}
+                            title="Open Conflict Review"
+                          >
+                            {content}
+                            <span style={styles.conflictReviewCta}>
+                              {isConflictLoading
+                                ? "Loading review..."
+                                : "Review conflicts"}
+                            </span>
+                          </button>
+                        ) : (
+                          <Link
+                            href={`/repo/${repoId}/draft/${id}`}
+                            style={styles.draftItem}
+                          >
+                            {content}
+                          </Link>
+                        )
                       )}
                     </li>
                   );
@@ -1981,19 +2368,18 @@ export default function RepoPage() {
                   );
                   return (
                     <li key={commit.commit_hash} style={styles.commitItem}>
-                      {commit.draft_id ? (
-                        <Link
-                          href={`/repo/${repoId}/draft/${commit.draft_id}`}
-                          style={styles.commitContentLink}
-                          title={title}
-                        >
-                          {content}
-                        </Link>
-                      ) : (
-                        <div style={styles.commitContent} title={title}>
-                          {content}
-                        </div>
-                      )}
+                      <button
+                        onClick={() => handleViewCommit(commit)}
+                        style={{
+                          ...styles.commitContentLink,
+                          ...(viewCommitHash === commit.commit_hash
+                            ? styles.commitContentSelected
+                            : {}),
+                        }}
+                        title={title}
+                      >
+                        {content}
+                      </button>
                     </li>
                   );
                 })}
@@ -2034,7 +2420,17 @@ export default function RepoPage() {
                   </div>
                   <div style={styles.metaItem}>
                     <dt style={styles.metaKey}>Last updated</dt>
-                    <dd style={styles.metaVal}>{formatDate(repo.updated_at)}</dd>
+                    <dd style={styles.metaVal}>
+                      {formatDateTime(repoHead?.commit_timestamp ?? repo.updated_at)}
+                    </dd>
+                  </div>
+                  <div style={styles.metaItem}>
+                    <dt style={styles.metaKey}>HEAD</dt>
+                    <dd style={styles.metaVal}>
+                      {repoHead?.latest_commit_hash
+                        ? `#${repoHead.latest_commit_hash.substring(0, 8)}`
+                        : "No commits"}
+                    </dd>
                   </div>
                 </dl>
               </section>
@@ -2081,15 +2477,32 @@ export default function RepoPage() {
                 <div style={styles.filesRect}>
                   <div style={styles.viewBanner}>
                     <span style={styles.viewBannerLabel}>
-                      {viewCommitHash ? "Latest accepted commit" : "Committed files"}
+                      {selectedCommit
+                        ? selectedCommit.commit_summary
+                        : viewCommitHash
+                        ? "Latest accepted commit"
+                        : "Committed files"}
                     </span>
                     {viewCommitHash && (
                       <span style={styles.viewBannerHash}>
                         #{viewCommitHash.substring(0, 10)}
                       </span>
                     )}
+                    {selectedCommit && (
+                      <button
+                        onClick={() => loadView()}
+                        style={{ ...styles.refreshBtn, ...styles.smallTextBtn }}
+                        title="Back to latest accepted commit"
+                      >
+                        Latest
+                      </button>
+                    )}
                     <button
-                      onClick={loadView}
+                      onClick={() =>
+                        selectedCommit
+                          ? loadView(selectedCommit.commit_hash, selectedCommit)
+                          : loadView()
+                      }
                       style={{ ...styles.refreshBtn, ...styles.iconBtn }}
                       title="Refresh committed files"
                     >
@@ -2406,6 +2819,147 @@ export default function RepoPage() {
           </div>
         </div>
       )}
+
+      {conflictReview && (
+        <div
+          style={styles.viewerOverlay}
+          onClick={() => setConflictReview(null)}
+        >
+          <div
+            style={{ ...styles.viewerContent, ...styles.conflictModalContent }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.viewerHeader}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.viewerTitle}>
+                  Conflict Review: {conflictReview.draftTitle}
+                </div>
+                <div style={styles.viewerSubtitle}>
+                  {conflictReview.mode} against #
+                  {conflictReview.pinnedHead.substring(0, 8)}
+                  {conflictReview.baseCommitHash
+                    ? `, base #${conflictReview.baseCommitHash.substring(0, 8)}`
+                    : ", no base commit"}
+                </div>
+              </div>
+              <Link
+                href={`/repo/${repoId}/draft/${conflictReview.draftId}`}
+                style={styles.viewerDownload}
+              >
+                Open Draft
+              </Link>
+              <button
+                onClick={handleFinalizeRebase}
+                disabled={
+                  rebasingDraftId === conflictReview.draftId ||
+                  requiredConflictPaths(conflictReview.files).some(
+                    (path) => !conflictReview.resolutions[path]
+                  )
+                }
+                style={{
+                  ...styles.viewerDownload,
+                  ...styles.finalizeRebaseButton,
+                  ...(rebasingDraftId === conflictReview.draftId
+                    ? { opacity: 0.6, cursor: "wait" }
+                    : {}),
+                }}
+                title="Finalize rebase"
+              >
+                {rebasingDraftId === conflictReview.draftId
+                  ? "Rebasing..."
+                  : "Finalize"}
+              </button>
+              <button
+                onClick={() => setConflictReview(null)}
+                style={styles.viewerCloseBtn}
+                title="Close conflict review"
+              >
+                x
+              </button>
+            </div>
+            <div style={styles.viewerBody}>
+              {conflictError && (
+                <div style={{ ...styles.draftsState, color: "#ff6b6b" }}>
+                  {conflictError}
+                </div>
+              )}
+              <div style={styles.conflictSummaryRow}>
+                <span>{conflictReview.files.length} files classified</span>
+                <span>
+                  {conflictReview.files.filter(isConflictActionRequired).length} need review
+                </span>
+              </div>
+              {conflictReview.files.length === 0 ? (
+                <div style={styles.viewerState}>
+                  No file differences were returned for this draft.
+                </div>
+              ) : (
+                <ul style={styles.conflictList}>
+                  {conflictReview.files.map((file) => {
+                    const color = conflictCategoryColor(file.category);
+                    return (
+                      <li key={file.path} style={styles.conflictItem}>
+                        <div style={styles.conflictFileTop}>
+                          <span style={styles.conflictPath}>{file.path}</span>
+                          <span
+                            style={{
+                              ...styles.conflictCategory,
+                              color,
+                              borderColor: color,
+                            }}
+                          >
+                            {file.category}
+                          </span>
+                        </div>
+                        <div style={styles.conflictHashes}>
+                          <span>base {file.base_hash?.substring(0, 8) ?? "-"}</span>
+                          <span>head {file.head_hash?.substring(0, 8) ?? "-"}</span>
+                          <span>draft {file.draft_hash?.substring(0, 8) ?? "-"}</span>
+                          {file.has_draft_changes && (
+                            <span style={{ color: "#ffa94d" }}>draft changed</span>
+                          )}
+                        </div>
+                        {isConflictActionRequired(file) && (
+                          <div style={styles.resolutionControls}>
+                            <button
+                              onClick={() =>
+                                setConflictResolution(file.path, "keep_mine")
+                              }
+                              style={{
+                                ...styles.resolutionButton,
+                                ...(conflictReview.resolutions[file.path] ===
+                                "keep_mine"
+                                  ? styles.resolutionButtonActive
+                                  : {}),
+                              }}
+                            >
+                              Keep mine
+                            </button>
+                            <button
+                              onClick={() =>
+                                setConflictResolution(file.path, "use_theirs")
+                              }
+                              style={{
+                                ...styles.resolutionButton,
+                                ...(conflictReview.resolutions[file.path] ===
+                                "use_theirs"
+                                  ? styles.resolutionButtonActive
+                                  : {}),
+                              }}
+                            >
+                              Use theirs
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2456,6 +3010,7 @@ const styles: { [key: string]: CSSProperties } = {
     display: "flex",
     flexDirection: "column",
     gap: 10,
+    boxSizing: "border-box",
   },
   rightSidebar: {
     borderRight: "none",
@@ -2690,6 +3245,12 @@ const styles: { [key: string]: CSSProperties } = {
     borderRadius: 6,
     whiteSpace: "nowrap" as const,
   },
+  finalizeRebaseButton: {
+    background: PURPLE,
+    color: "white",
+    borderColor: PURPLE,
+    cursor: "pointer",
+  },
   viewerCloseBtn: {
     background: "transparent",
     border: "none",
@@ -2831,6 +3392,15 @@ const styles: { [key: string]: CSSProperties } = {
     textDecoration: "none",
     color: TEXT,
   },
+  draftItemStale: {
+    borderColor: "#ffa94d",
+    background: "#1f1b13",
+  },
+  draftConflictButton: {
+    cursor: "pointer",
+    textAlign: "left",
+    width: "100%",
+  },
   draftTitle: {
     fontSize: 13,
     fontWeight: 600,
@@ -2852,6 +3422,19 @@ const styles: { [key: string]: CSSProperties } = {
     color: PURPLE,
     textTransform: "uppercase",
     letterSpacing: 0.5,
+  },
+  staleStatus: {
+    padding: "1px 6px",
+    borderRadius: 10,
+    border: "1px solid #ffa94d",
+    color: "#ffa94d",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  conflictReviewCta: {
+    color: "#ffa94d",
+    fontSize: 11,
+    fontWeight: 700,
   },
   draftDate: {
     color: MUTED,
@@ -2967,6 +3550,92 @@ const styles: { [key: string]: CSSProperties } = {
     color: "#ff6b6b",
     padding: "4px 0",
   },
+  staleBanner: {
+    fontSize: 11,
+    color: "#ffa94d",
+    border: "1px solid #5c3f12",
+    background: "#1f1b13",
+    borderRadius: 6,
+    padding: "7px 8px",
+    lineHeight: 1.4,
+  },
+  conflictModalContent: {
+    maxWidth: 900,
+  },
+  conflictSummaryRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    color: MUTED,
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  conflictList: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  conflictItem: {
+    border: `1px solid ${BORDER}`,
+    borderRadius: 6,
+    background: BG,
+    padding: "10px 12px",
+  },
+  conflictFileTop: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  conflictPath: {
+    fontFamily: "Consolas, Monaco, monospace",
+    fontSize: 13,
+    color: TEXT,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  conflictCategory: {
+    flexShrink: 0,
+    border: "1px solid",
+    borderRadius: 10,
+    padding: "1px 7px",
+    fontSize: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  conflictHashes: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 7,
+    color: MUTED,
+    fontFamily: "Consolas, Monaco, monospace",
+    fontSize: 11,
+  },
+  resolutionControls: {
+    display: "flex",
+    gap: 8,
+    marginTop: 10,
+  },
+  resolutionButton: {
+    padding: "5px 9px",
+    borderRadius: 5,
+    border: `1px solid ${BORDER}`,
+    background: "transparent",
+    color: TEXT,
+    cursor: "pointer",
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  resolutionButtonActive: {
+    borderColor: "#ffa94d",
+    color: "#ffa94d",
+    background: "#1f1b13",
+  },
   pendingSection: {
     marginTop: 20,
     paddingTop: 12,
@@ -3016,6 +3685,14 @@ const styles: { [key: string]: CSSProperties } = {
     padding: "4px 6px",
     borderRadius: 4,
     transition: "background-color 0.15s",
+    background: "transparent",
+    border: "none",
+    textAlign: "left",
+    width: "100%",
+  },
+  commitContentSelected: {
+    background: "#1f1b13",
+    outline: "1px solid #ffa94d",
   },
   commitHashSmall: {
     fontFamily: "monospace",
