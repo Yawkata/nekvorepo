@@ -49,21 +49,41 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        service: [identity-service, repo-service, workflow-service, frontend, database-migrations]
+        include:
+          # Backend services share code via `services/shared`, so their
+          # Dockerfiles reference repo-root-relative paths. Build context
+          # must be the repo root.
+          - service: identity-service
+            context: .
+            file: services/identity-service/Dockerfile
+          - service: repo-service
+            context: .
+            file: services/repo-service/Dockerfile
+          - service: workflow-service
+            context: .
+            file: services/workflow-service/Dockerfile
+          - service: database-migrations
+            context: .
+            file: services/database-migrations/Dockerfile
+          # Frontend is self-contained; its Dockerfile COPYs `package.json`
+          # directly (no ../ references), so context is its own directory.
+          - service: frontend
+            context: frontend
+            file: frontend/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
       - id: vars
         run: echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if service dir absent
+      - name: Skip if Dockerfile absent
         id: exists
         run: |
-          if [ -d "services/${{ matrix.service }}" ] || [ -d "${{ matrix.service }}" ]; then
+          if [ -f "${{ matrix.file }}" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::source for ${{ matrix.service }} not found — skipping build"
+            echo "::warning::${{ matrix.file }} not found — skipping build"
           fi
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -83,11 +103,11 @@ jobs:
         if: steps.exists.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
-          # Context is the REPO ROOT because service Dockerfiles COPY
-          # sibling paths like `services/shared`. A per-service context
-          # hides those paths and fails at COPY time.
-          context: .
-          file: ${{ hashFiles(format('services/{0}/Dockerfile', matrix.service)) != '' && format('services/{0}/Dockerfile', matrix.service) || format('{0}/Dockerfile', matrix.service) }}
+          # Per-service context/file from the matrix — backends build from
+          # repo root (to pull in services/shared); frontend builds from its
+          # own directory (its Dockerfile uses relative COPYs).
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           platforms: linux/arm64
           tags: |
