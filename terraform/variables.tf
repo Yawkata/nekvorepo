@@ -34,7 +34,7 @@ variable "frontend_url" {
 variable "domain_name" {
   type        = string
   description = "Apex domain you intend to register (e.g. chronovcs.com). The Route53 hosted zone, DNSSEC, and ACM certificate are provisioned for this domain and its wildcard subdomain. No trailing dot. Leave blank before a domain is chosen — DNS/ACM resources will be skipped."
-  default     = ""
+  default     = "chronovcs.com"
 }
 
 variable "environment" {
