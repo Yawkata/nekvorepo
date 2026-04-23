@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -26,6 +26,14 @@ function extractErrorMessage(data: any, fallback: string): string {
   return fallback;
 }
 
+function splitPath(path: string): { dir: string; name: string } {
+  const cleaned = path.trim().replace(/^\/+|\/+$/g, "");
+  if (!cleaned) return { dir: "", name: "" };
+  const parts = cleaned.split("/");
+  const name = parts.pop() || "";
+  return { dir: parts.join("/"), name };
+}
+
 export default function SaveTextFilePage() {
   const router = useRouter();
   const params = useParams();
@@ -33,11 +41,87 @@ export default function SaveTextFilePage() {
   const repoId = params?.repo_id as string;
   const draftId = params?.draft_id as string;
 
+  const existingPath = searchParams?.get("path") || "";
   const initialDir = searchParams?.get("dir") || "";
-  const [fileName, setFileName] = useState("");
+  const pathParts = useMemo(() => splitPath(existingPath), [existingPath]);
+  const targetDir = existingPath ? pathParts.dir : initialDir;
+  const [fileName, setFileName] = useState(pathParts.name);
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
+  const [loadingFile, setLoadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFileName(pathParts.name);
+  }, [pathParts.name]);
+
+  useEffect(() => {
+    if (!existingPath) {
+      setContent("");
+      setLoadingFile(false);
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadExistingFile() {
+      setLoadingFile(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/repos/${repoId}/drafts/${draftId}/read/${encodeURIComponent(
+            existingPath
+          )}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+
+        if (res.status === 401) {
+          router.push("/login");
+          return;
+        }
+
+        if (!res.ok) {
+          const text = await res.text();
+          let data = {};
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            /* ignore */
+          }
+          if (!cancelled) {
+            setError(extractErrorMessage(data, "Failed to load file"));
+          }
+          return;
+        }
+
+        const nextContent = await res.text();
+        if (!cancelled) {
+          setContent(nextContent);
+        }
+      } catch {
+        if (!cancelled) {
+          setError("Failed to connect to server");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingFile(false);
+        }
+      }
+    }
+
+    void loadExistingFile();
+    return () => {
+      cancelled = true;
+    };
+  }, [draftId, existingPath, repoId, router]);
 
   async function handleSave() {
     setError(null);
@@ -56,7 +140,7 @@ export default function SaveTextFilePage() {
       return;
     }
 
-    const dir = initialDir.replace(/^\/+|\/+$/g, "");
+    const dir = targetDir.replace(/^\/+|\/+$/g, "");
     const path = (dir ? `${dir}/${cleanedName}` : cleanedName).replace(
       /^\/+/,
       ""
@@ -124,11 +208,14 @@ export default function SaveTextFilePage() {
             ← Back to draft
           </Link>
 
-          <h1 style={styles.title}>Save a text file</h1>
+          <h1 style={styles.title}>
+            {existingPath ? "Edit text file" : "Save a text file"}
+          </h1>
 
-          {initialDir && (
+          {targetDir && (
             <p style={styles.dirHint}>
-              Saving inside <code>{initialDir}/</code>
+              {existingPath ? "Editing inside " : "Saving inside "}
+              <code>{targetDir}/</code>
             </p>
           )}
 
@@ -141,6 +228,7 @@ export default function SaveTextFilePage() {
               onChange={(e) => setFileName(e.target.value)}
               placeholder="e.g. hello.txt or src/hello.txt"
               style={styles.nameInput}
+              readOnly={!!existingPath}
             />
           </div>
 
@@ -153,18 +241,21 @@ export default function SaveTextFilePage() {
               placeholder="Type or paste the file contents here…"
               style={styles.textarea}
               spellCheck={false}
+              readOnly={loadingFile}
             />
 
             <div style={styles.rectFooter}>
               <button
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || loadingFile}
                 style={{
                   ...styles.saveBtn,
-                  ...(saving ? { opacity: 0.6, cursor: "wait" } : {}),
+                  ...((saving || loadingFile)
+                    ? { opacity: 0.6, cursor: "wait" }
+                    : {}),
                 }}
               >
-                {saving ? "Saving…" : "Save"}
+                {loadingFile ? "Loading…" : saving ? "Saving…" : "Save"}
               </button>
               {error && <div style={styles.errorText}>{error}</div>}
             </div>

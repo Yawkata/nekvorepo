@@ -15,6 +15,7 @@ export async function GET(
   const { repo_id, path } = await params;
   const url = new URL(req.url);
   const ref = url.searchParams.get("ref");
+  const textMode = url.searchParams.get("text") === "1";
 
   // Reconstruct the file path from path segments
   const filePath = path.map((p) => decodeURIComponent(p)).join("/");
@@ -35,14 +36,45 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const text = await response.text();
+    const responseText = await response.text();
     let data: unknown = {};
-    if (text) {
+    if (responseText) {
       try {
-        data = JSON.parse(text);
+        data = JSON.parse(responseText);
       } catch {
         /* ignore parse errors */
       }
+    }
+
+    if (textMode && response.ok && data && typeof data === "object" && "url" in data) {
+      const downloadUrl =
+        typeof (data as { url?: unknown }).url === "string"
+          ? (data as { url: string }).url
+          : null;
+
+      if (!downloadUrl) {
+        return NextResponse.json(
+          { error: "Missing file URL for text preview" },
+          { status: 500 }
+        );
+      }
+
+      const fileResponse = await fetch(downloadUrl);
+      if (!fileResponse.ok) {
+        return NextResponse.json(
+          { error: "Failed to load file preview" },
+          { status: 502 }
+        );
+      }
+
+      const body = await fileResponse.text();
+      return new NextResponse(body, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
     }
 
     return NextResponse.json(data, { status: response.status });

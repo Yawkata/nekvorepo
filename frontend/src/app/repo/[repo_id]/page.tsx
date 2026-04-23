@@ -88,6 +88,17 @@ type ConflictReview = {
   collisionRoots: string[];
 };
 
+type ConflictPanePreview = {
+  path: string;
+  contentType: string;
+  text: string | null;
+  isText: boolean;
+  url: string | null;
+  loading: boolean;
+  error: string | null;
+  missing?: boolean;
+};
+
 type Invite = {
   token_id: string;
   invited_email: string;
@@ -249,6 +260,9 @@ export default function RepoPage() {
   const [conflictLoadingDraftId, setConflictLoadingDraftId] = useState<string | null>(null);
   const [conflictError, setConflictError] = useState<string | null>(null);
   const [rebasingDraftId, setRebasingDraftId] = useState<string | null>(null);
+  const [selectedConflictPath, setSelectedConflictPath] = useState<string | null>(null);
+  const [conflictDraftPreview, setConflictDraftPreview] = useState<ConflictPanePreview | null>(null);
+  const [conflictHeadPreview, setConflictHeadPreview] = useState<ConflictPanePreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -302,8 +316,10 @@ export default function RepoPage() {
     content_type: string;
     size: number;
     url: string;
-    text: string | null; // null if not a text file (use download link instead)
+    text: string | null;
+    isText: boolean;
     loadingText: boolean;
+    previewError?: string | null;
   };
   const [openedFile, setOpenedFile] = useState<OpenFile | null>(null);
   const [openingFilePath, setOpeningFilePath] = useState<string | null>(null);
@@ -330,6 +346,13 @@ export default function RepoPage() {
   const staleDrafts = useMemo(
     () => drafts.filter((draft) => isDraftStale(draft, latestHeadHash)),
     [drafts, latestHeadHash]
+  );
+  const visibleConflictFiles = useMemo(
+    () =>
+      conflictReview?.files.filter(
+        (file) => file.path.split("/").pop()?.toLowerCase() !== ".keep"
+      ) ?? [],
+    [conflictReview]
   );
   // Approved drafts are shown in the Commit History section, not here.
   const visibleDrafts = useMemo(
@@ -1007,6 +1030,14 @@ export default function RepoPage() {
         saveAs: {},
         collisionRoots: computeCollisionRoots(files),
       });
+      const visibleFiles = files.filter(
+        (file) => file.path.split("/").pop()?.toLowerCase() !== ".keep"
+      );
+      const nextSelected =
+        visibleFiles.find((file) =>
+          isConflictActionRequired(file, computeCollisionRoots(files))
+        )?.path ?? visibleFiles[0]?.path ?? null;
+      setSelectedConflictPath(nextSelected);
     } catch {
       setConflictError("Failed to connect to server");
       alert("Failed to connect to server");
@@ -1032,11 +1063,7 @@ export default function RepoPage() {
       (path) => !conflictReview.resolutions[path]
     );
     if (missing.length > 0) {
-      setConflictError(
-        `Choose a resolution for ${missing.length} file${
-          missing.length === 1 ? "" : "s"
-        } before finalizing.`
-      );
+      setConflictError("Resolve all the conflicts first!");
       return;
     }
 
@@ -1134,6 +1161,9 @@ export default function RepoPage() {
       }
 
       setConflictReview(null);
+      setSelectedConflictPath(null);
+      setConflictDraftPreview(null);
+      setConflictHeadPreview(null);
       await loadDrafts();
       await loadRepoHead();
       await loadView();
@@ -1287,6 +1317,30 @@ export default function RepoPage() {
     return false;
   }
 
+  function isProbablyTextPath(path: string): boolean {
+    const lower = path.toLowerCase();
+    return (
+      lower.endsWith(".txt") ||
+      lower.endsWith(".md") ||
+      lower.endsWith(".json") ||
+      lower.endsWith(".js") ||
+      lower.endsWith(".ts") ||
+      lower.endsWith(".tsx") ||
+      lower.endsWith(".jsx") ||
+      lower.endsWith(".py") ||
+      lower.endsWith(".java") ||
+      lower.endsWith(".cs") ||
+      lower.endsWith(".html") ||
+      lower.endsWith(".css") ||
+      lower.endsWith(".xml") ||
+      lower.endsWith(".yml") ||
+      lower.endsWith(".yaml") ||
+      lower.endsWith(".csv") ||
+      lower.endsWith(".sql") ||
+      !lower.includes(".")
+    );
+  }
+
   async function handleOpenViewFile(file: ViewFile) {
     const token = localStorage.getItem("token");
     if (!token || !repoId) return;
@@ -1324,32 +1378,47 @@ export default function RepoPage() {
         size: data.size ?? file.size,
         url: data.url,
         text: null,
+        isText: isTextContentType(data.content_type || file.content_type),
         loadingText: isTextContentType(data.content_type || file.content_type),
+        previewError: null,
       };
       setOpenedFile(opened);
 
       // Fetch text content for readable types
       if (opened.loadingText) {
         try {
-          const fileRes = await fetch(opened.url);
+          const fileRes = await fetch(
+            `/api/repos/${repoId}/files/${segments}${query}${query ? "&" : "?"}text=1`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            }
+          );
           if (fileRes.ok) {
             const body = await fileRes.text();
             setOpenedFile((prev) =>
               prev && prev.path === file.path
-                ? { ...prev, text: body, loadingText: false }
+                ? { ...prev, text: body, loadingText: false, previewError: null }
                 : prev
             );
           } else {
             setOpenedFile((prev) =>
               prev && prev.path === file.path
-                ? { ...prev, loadingText: false }
+                ? {
+                    ...prev,
+                    loadingText: false,
+                    previewError: "Failed to load file preview.",
+                  }
                 : prev
             );
           }
         } catch {
           setOpenedFile((prev) =>
             prev && prev.path === file.path
-              ? { ...prev, loadingText: false }
+              ? {
+                  ...prev,
+                  loadingText: false,
+                  previewError: "Failed to load file preview.",
+                }
               : prev
           );
         }
@@ -1860,6 +1929,241 @@ export default function RepoPage() {
   }, [repoId, router]);
 
   useEffect(() => {
+    if (!conflictReview || !selectedConflictPath || !repoId) {
+      setConflictDraftPreview(null);
+      setConflictHeadPreview(null);
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    const selectedFile = conflictReview.files.find(
+      (file) => file.path === selectedConflictPath
+    );
+    if (!selectedFile) {
+      setConflictDraftPreview(null);
+      setConflictHeadPreview(null);
+      return;
+    }
+    const activeConflictReview = conflictReview;
+    const activeSelectedFile = selectedFile;
+    const draftDescendants = activeConflictReview.files.filter(
+      (file) =>
+        file.path.startsWith(`${selectedConflictPath}/`) &&
+        file.path.split("/").pop()?.toLowerCase() !== ".keep" &&
+        Boolean(file.draft_hash)
+    );
+    const headDescendants = activeConflictReview.files.filter(
+      (file) =>
+        file.path.startsWith(`${selectedConflictPath}/`) &&
+        file.path.split("/").pop()?.toLowerCase() !== ".keep" &&
+        Boolean(file.head_hash)
+    );
+
+    let cancelled = false;
+    const encodedPath = selectedConflictPath
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+
+    const initialDraft: ConflictPanePreview = {
+      path: selectedConflictPath,
+      contentType: "text/plain",
+      text: null,
+      isText: true,
+      url: null,
+      loading: true,
+      error: null,
+      missing: false,
+    };
+    const initialHead: ConflictPanePreview = {
+      path: selectedConflictPath,
+      contentType: "text/plain",
+      text: null,
+      isText: true,
+      url: null,
+      loading: true,
+      error: null,
+      missing: false,
+    };
+    setConflictDraftPreview(initialDraft);
+    setConflictHeadPreview(initialHead);
+
+    async function loadDraftPreview() {
+      if (!activeSelectedFile.draft_hash && draftDescendants.length === 0) {
+        if (!cancelled) {
+          setConflictDraftPreview({
+            ...initialDraft,
+            loading: false,
+            missing: true,
+            error: "This folder is empty.",
+          });
+        }
+        return;
+      }
+      if (!activeSelectedFile.has_draft_changes && !activeSelectedFile.draft_hash) {
+        if (!cancelled) {
+          setConflictDraftPreview({
+            ...initialDraft,
+            loading: false,
+            missing: true,
+            error: "No draft-side content for this path.",
+          });
+        }
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/repos/${repoId}/drafts/${activeConflictReview.draftId}/read/${encodedPath}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) {
+          if (!cancelled) {
+            setConflictDraftPreview({
+              ...initialDraft,
+              loading: false,
+              error: res.status === 404 ? "Missing in stale draft." : "Failed to load stale draft preview.",
+              missing: res.status === 404,
+            });
+          }
+          return;
+        }
+        const text = await res.text();
+        if (!cancelled) {
+          setConflictDraftPreview({
+            ...initialDraft,
+            loading: false,
+            text,
+            isText: true,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setConflictDraftPreview({
+            ...initialDraft,
+            loading: false,
+            error: "Failed to load stale draft preview.",
+          });
+        }
+      }
+    }
+
+    async function loadHeadPreview() {
+      if (!activeSelectedFile.head_hash && headDescendants.length === 0) {
+        if (!cancelled) {
+          setConflictHeadPreview({
+            ...initialHead,
+            loading: false,
+            missing: true,
+            error: "This folder is empty.",
+          });
+        }
+        return;
+      }
+      if (!activeSelectedFile.head_hash) {
+        if (!cancelled) {
+          setConflictHeadPreview({
+            ...initialHead,
+            loading: false,
+            missing: true,
+            error: "Missing in HEAD.",
+          });
+        }
+        return;
+      }
+
+      try {
+        const metaRes = await fetch(
+          `/api/repos/${repoId}/files/${encodedPath}?ref=${encodeURIComponent(
+            activeConflictReview.pinnedHead
+          )}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const metaText = await metaRes.text();
+        let meta: { url?: string; content_type?: string; size?: number; error?: string } = {};
+        try {
+          meta = metaText ? JSON.parse(metaText) : {};
+        } catch {
+          /* ignore */
+        }
+        if (!metaRes.ok || !meta.url) {
+          if (!cancelled) {
+            setConflictHeadPreview({
+              ...initialHead,
+              loading: false,
+              error: "Failed to load HEAD preview.",
+            });
+          }
+          return;
+        }
+
+        const contentType = meta.content_type || "application/octet-stream";
+        const isText =
+          isTextContentType(contentType) ||
+          isProbablyTextPath(activeSelectedFile.path);
+        if (isText) {
+          const textRes = await fetch(
+            `/api/repos/${repoId}/files/${encodedPath}?ref=${encodeURIComponent(
+              activeConflictReview.pinnedHead
+            )}&text=1`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!textRes.ok) {
+            if (!cancelled) {
+              setConflictHeadPreview({
+                ...initialHead,
+                loading: false,
+                contentType,
+                isText: true,
+                error: "Failed to load HEAD preview.",
+              });
+            }
+            return;
+          }
+          const text = await textRes.text();
+          if (!cancelled) {
+            setConflictHeadPreview({
+              ...initialHead,
+              loading: false,
+              contentType,
+              isText: true,
+              text,
+              url: meta.url,
+            });
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setConflictHeadPreview({
+            ...initialHead,
+            loading: false,
+            contentType,
+            isText: false,
+            url: meta.url,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setConflictHeadPreview({
+            ...initialHead,
+            loading: false,
+            error: "Failed to load HEAD preview.",
+          });
+        }
+      }
+    }
+
+    void Promise.all([loadDraftPreview(), loadHeadPreview()]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conflictReview, repoId, selectedConflictPath]);
+
+  useEffect(() => {
     if (isAdmin) {
       loadInvites();
       loadMembers();
@@ -1880,8 +2184,11 @@ export default function RepoPage() {
 
   const filteredViewFiles = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return viewFiles;
-    return viewFiles.filter((f) => f.path.toLowerCase().includes(q));
+    const withoutKeep = viewFiles.filter(
+      (f) => f.path.split("/").pop()?.toLowerCase() !== ".keep"
+    );
+    if (!q) return withoutKeep;
+    return withoutKeep.filter((f) => f.path.toLowerCase().includes(q));
   }, [viewFiles, search]);
 
   // Build a folder tree from the flat list of view files.
@@ -2018,6 +2325,74 @@ export default function RepoPage() {
       }
     }
     return out;
+  }
+
+  function renderConflictPanePreview(
+    preview: ConflictPanePreview | null,
+    side: "draft" | "head",
+    activePath: string,
+    files: ConflictFile[]
+  ) {
+    const descendants = files
+      .filter((file) => file.path.startsWith(`${activePath}/`))
+      .filter((file) =>
+        side === "draft" ? Boolean(file.draft_hash) : Boolean(file.head_hash)
+      )
+      .map((file) => file.path.slice(activePath.length + 1));
+
+    if (!preview) {
+      return <div style={styles.viewerState}>Select a conflicted file.</div>;
+    }
+    if (preview.loading) {
+      return <div style={styles.viewerState}>Loading preview...</div>;
+    }
+    if (descendants.length > 0) {
+      return (
+        <div style={styles.conflictStructureBox}>
+          <div style={styles.conflictStructureTitle}>
+            This side treats <code>{activePath}</code> as a folder.
+          </div>
+          <ul style={styles.conflictStructureList}>
+            {descendants.map((path) => (
+              <li key={path} style={styles.conflictStructureItem}>
+                {path}
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    }
+    if (preview.error) {
+      return <div style={styles.viewerState}>{preview.error}</div>;
+    }
+    if (preview.isText) {
+      return preview.text && preview.text.length > 0 ? (
+        <pre style={styles.viewerPre}>{preview.text}</pre>
+      ) : (
+        <div style={styles.viewerState}>This file is empty.</div>
+      );
+    }
+    if (preview.contentType.startsWith("image/") && preview.url) {
+      return (
+        <img src={preview.url} alt={preview.path} style={styles.viewerImage} />
+      );
+    }
+    if (preview.contentType === "application/pdf" && preview.url) {
+      return (
+        <iframe
+          src={preview.url}
+          style={styles.viewerIframe}
+          title={preview.path}
+        />
+      );
+    }
+    if (preview.contentType.startsWith("video/") && preview.url) {
+      return <video src={preview.url} controls style={styles.viewerImage} />;
+    }
+    if (preview.contentType.startsWith("audio/") && preview.url) {
+      return <audio src={preview.url} controls style={{ width: "100%" }} />;
+    }
+    return <div style={styles.viewerState}>Preview not available for this file type.</div>;
   }
 
   return (
@@ -2380,21 +2755,6 @@ export default function RepoPage() {
                           </div>
                         )}
                         <div style={styles.commitActions}>
-                          <button
-                            onClick={() => refreshCommitStatus(commit.commit_hash)}
-                            disabled={statusLoadingHash === commit.commit_hash}
-                            style={{
-                              ...styles.statusPollButton,
-                              ...(statusLoadingHash === commit.commit_hash
-                                ? { opacity: 0.6, cursor: "wait" }
-                                : {}),
-                            }}
-                            title="Check commit status"
-                          >
-                            {statusLoadingHash === commit.commit_hash
-                              ? "..."
-                              : "Status"}
-                          </button>
                           <button
                             onClick={() =>
                               setOpenCommitMenu((cur) =>
@@ -2939,7 +3299,7 @@ export default function RepoPage() {
           >
             <div style={styles.viewerHeader}>
               <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
-                <span style={styles.viewerTitle}>{openedFile.path}</span>
+                <span style={styles.viewerTitle}>{openedFile!.path}</span>
                 <span style={styles.viewerSubtitle}>
                   {openedFile.content_type} · {formatSize(openedFile.size)}
                 </span>
@@ -2963,8 +3323,14 @@ export default function RepoPage() {
             <div style={styles.viewerBody}>
               {openedFile.loadingText ? (
                 <div style={styles.viewerState}>Loading file content…</div>
-              ) : openedFile.text !== null ? (
-                <pre style={styles.viewerPre}>{openedFile.text}</pre>
+              ) : openedFile.isText ? (
+                openedFile.previewError ? (
+                  <div style={styles.viewerState}>{openedFile.previewError}</div>
+                ) : openedFile.text && openedFile.text.length > 0 ? (
+                  <pre style={styles.viewerPre}>{openedFile.text}</pre>
+                ) : (
+                  <div style={styles.viewerState}>This text file is empty.</div>
+                )
               ) : openedFile.content_type.startsWith("image/") ? (
                 <img
                   src={openedFile.url}
@@ -2988,8 +3354,6 @@ export default function RepoPage() {
               ) : (
                 <div style={styles.viewerState}>
                   Preview not available for this file type.
-                  <br />
-                  Use the &quot;Open / Download&quot; link above.
                 </div>
               )}
             </div>
@@ -3000,7 +3364,12 @@ export default function RepoPage() {
       {conflictReview && (
         <div
           style={styles.viewerOverlay}
-          onClick={() => setConflictReview(null)}
+          onClick={() => {
+            setConflictReview(null);
+            setSelectedConflictPath(null);
+            setConflictDraftPreview(null);
+            setConflictHeadPreview(null);
+          }}
         >
           <div
             style={{ ...styles.viewerContent, ...styles.conflictModalContent }}
@@ -3019,41 +3388,42 @@ export default function RepoPage() {
                     : ", no base commit"}
                 </div>
               </div>
-              <Link
-                href={`/repo/${repoId}/draft/${conflictReview.draftId}`}
-                style={styles.viewerDownload}
-              >
-                Open Draft
-              </Link>
-              <button
-                onClick={handleFinalizeRebase}
-                disabled={
-                  rebasingDraftId === conflictReview.draftId ||
-                  requiredConflictPaths(
-                    conflictReview.files,
-                    conflictReview.collisionRoots
-                  ).some((path) => !conflictReview.resolutions[path])
-                }
-                style={{
-                  ...styles.viewerDownload,
-                  ...styles.finalizeRebaseButton,
-                  ...(rebasingDraftId === conflictReview.draftId
-                    ? { opacity: 0.6, cursor: "wait" }
-                    : {}),
-                }}
-                title="Finalize rebase"
-              >
-                {rebasingDraftId === conflictReview.draftId
-                  ? "Rebasing..."
-                  : "Finalize"}
-              </button>
-              <button
-                onClick={() => setConflictReview(null)}
-                style={styles.viewerCloseBtn}
-                title="Close conflict review"
-              >
-                x
-              </button>
+              <div style={styles.viewerHeaderActions}>
+                <Link
+                  href={`/repo/${repoId}/draft/${conflictReview.draftId}`}
+                  style={styles.viewerDownload}
+                >
+                  Open Draft
+                </Link>
+                <button
+                  onClick={handleFinalizeRebase}
+                  disabled={rebasingDraftId === conflictReview.draftId}
+                  style={{
+                    ...styles.viewerDownload,
+                    ...styles.finalizeRebaseButton,
+                    ...(rebasingDraftId === conflictReview.draftId
+                      ? { opacity: 0.6, cursor: "wait" }
+                      : {}),
+                  }}
+                  title="Finalize rebase"
+                >
+                  {rebasingDraftId === conflictReview.draftId
+                    ? "Rebasing..."
+                    : "Finalize"}
+                </button>
+                <button
+                  onClick={() => {
+                    setConflictReview(null);
+                    setSelectedConflictPath(null);
+                    setConflictDraftPreview(null);
+                    setConflictHeadPreview(null);
+                  }}
+                  style={styles.viewerCloseBtn}
+                  title="Close conflict review"
+                >
+                  x
+                </button>
+              </div>
             </div>
             <div style={styles.viewerBody}>
               {conflictError && (
@@ -3062,23 +3432,25 @@ export default function RepoPage() {
                 </div>
               )}
               <div style={styles.conflictSummaryRow}>
-                <span>{conflictReview.files.length} files classified</span>
+                <span>{visibleConflictFiles.length} files classified</span>
                 <span>
                   {
-                    conflictReview.files.filter((f) =>
+                    visibleConflictFiles.filter((f) =>
                       isConflictActionRequired(f, conflictReview.collisionRoots)
                     ).length
                   }{" "}
                   need review
                 </span>
               </div>
-              {conflictReview.files.length === 0 ? (
+              {visibleConflictFiles.length === 0 ? (
                 <div style={styles.viewerState}>
                   No file differences were returned for this draft.
                 </div>
               ) : (
+                <div style={styles.conflictLayout}>
+                <div style={styles.conflictListColumn}>
                 <ul style={styles.conflictList}>
-                  {conflictReview.files.map((file) => {
+                  {visibleConflictFiles.map((file) => {
                     const color = conflictCategoryColor(file.category);
                     const actionRequired = isConflictActionRequired(
                       file,
@@ -3101,7 +3473,16 @@ export default function RepoPage() {
                     const currentChoice =
                       conflictReview.resolutions[file.path];
                     return (
-                      <li key={file.path} style={styles.conflictItem}>
+                      <li
+                        key={file.path}
+                        style={{
+                          ...styles.conflictItem,
+                          ...(selectedConflictPath === file.path
+                            ? styles.conflictItemSelected
+                            : {}),
+                        }}
+                        onClick={() => setSelectedConflictPath(file.path)}
+                      >
                         <div style={styles.conflictFileTop}>
                           <span style={styles.conflictPath}>{file.path}</span>
                           <span
@@ -3140,7 +3521,7 @@ export default function RepoPage() {
                                   : {}),
                               }}
                             >
-                              Keep mine
+                              Save changes
                             </button>
                             <button
                               onClick={() =>
@@ -3153,7 +3534,7 @@ export default function RepoPage() {
                                   : {}),
                               }}
                             >
-                              Use theirs
+                              No changes
                             </button>
                           </div>
                         )}
@@ -3176,6 +3557,58 @@ export default function RepoPage() {
                     );
                   })}
                 </ul>
+                </div>
+                {(() => {
+                  const activeFile = visibleConflictFiles.find(
+                    (file) => file.path === selectedConflictPath
+                  );
+                  if (!activeFile) {
+                    return (
+                      <div style={styles.conflictPreviewColumn}>
+                      <div style={styles.viewerState}>
+                        Select a conflicted file to compare the stale draft with HEAD.
+                      </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={styles.conflictPreviewColumn}>
+                    <div style={styles.conflictPreviewGrid}>
+                      <div style={styles.conflictPreviewPane}>
+                        <div style={styles.conflictPreviewHeader}>
+                          <span style={styles.viewerTitle}>Stale draft</span>
+                          <span style={styles.viewerSubtitle}>{activeFile.path}</span>
+                        </div>
+                        <div style={styles.conflictPreviewBody}>
+                          {renderConflictPanePreview(
+                            conflictDraftPreview,
+                            "draft",
+                            activeFile.path,
+                            visibleConflictFiles
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.conflictPreviewPane}>
+                        <div style={styles.conflictPreviewHeader}>
+                          <span style={styles.viewerTitle}>
+                            HEAD #{conflictReview.pinnedHead.substring(0, 8)}
+                          </span>
+                          <span style={styles.viewerSubtitle}>{activeFile.path}</span>
+                        </div>
+                        <div style={styles.conflictPreviewBody}>
+                          {renderConflictPanePreview(
+                            conflictHeadPreview,
+                            "head",
+                            activeFile.path,
+                            visibleConflictFiles
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    </div>
+                  );
+                })()}
+                </div>
               )}
             </div>
           </div>
@@ -3225,7 +3658,7 @@ const styles: { [key: string]: CSSProperties } = {
     flex: 1,
   },
   sidebar: {
-    width: 268,
+    width: 282,
     borderRight: `1px solid ${PURPLE}`,
     padding: 20,
     display: "flex",
@@ -3444,6 +3877,12 @@ const styles: { [key: string]: CSSProperties } = {
     gap: 10,
     padding: "12px 16px",
     borderBottom: `1px solid ${BORDER}`,
+  },
+  viewerHeaderActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexShrink: 0,
   },
   viewerTitle: {
     fontSize: 14,
@@ -3783,7 +4222,7 @@ const styles: { [key: string]: CSSProperties } = {
     lineHeight: 1.4,
   },
   conflictModalContent: {
-    maxWidth: 900,
+    maxWidth: 1380,
   },
   conflictSummaryRow: {
     display: "flex",
@@ -3792,6 +4231,28 @@ const styles: { [key: string]: CSSProperties } = {
     color: MUTED,
     fontSize: 12,
     marginBottom: 12,
+    padding: "0 2px",
+  },
+  conflictLayout: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+    gap: 18,
+    minHeight: 0,
+    height: "100%",
+    alignItems: "stretch",
+  },
+  conflictListColumn: {
+    minHeight: 0,
+    overflow: "auto",
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    background: BG,
+    padding: 12,
+  },
+  conflictPreviewColumn: {
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
   },
   conflictList: {
     listStyle: "none",
@@ -3806,6 +4267,11 @@ const styles: { [key: string]: CSSProperties } = {
     borderRadius: 6,
     background: BG,
     padding: "10px 12px",
+    cursor: "pointer",
+  },
+  conflictItemSelected: {
+    borderColor: "#4fc3f7",
+    boxShadow: "inset 0 0 0 1px #4fc3f7",
   },
   conflictFileTop: {
     display: "flex",
@@ -3858,6 +4324,65 @@ const styles: { [key: string]: CSSProperties } = {
     borderColor: "#ffa94d",
     color: "#ffa94d",
     background: "#1f1b13",
+  },
+  conflictPreviewGrid: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr)",
+    gridTemplateRows: "minmax(0, 1fr) minmax(0, 1fr)",
+    gap: 18,
+    minHeight: 0,
+    height: "100%",
+  },
+  conflictPreviewPane: {
+    minHeight: 0,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    background: BG,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  conflictPreviewHeader: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    padding: "10px 12px",
+    borderBottom: `1px solid ${BORDER}`,
+    minWidth: 0,
+  },
+  conflictPreviewBody: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    padding: 12,
+  },
+  conflictStructureBox: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    color: TEXT,
+  },
+  conflictStructureTitle: {
+    color: MUTED,
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  conflictStructureList: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  conflictStructureItem: {
+    border: `1px solid ${BORDER}`,
+    borderRadius: 6,
+    padding: "8px 10px",
+    background: PANEL,
+    fontFamily: "Consolas, Monaco, monospace",
+    fontSize: 12,
+    color: TEXT,
   },
   pendingSection: {
     marginTop: 20,

@@ -13,6 +13,7 @@ export async function POST(
   const { repo_id } = await params;
 
   try {
+    const rawBody = await req.text();
     const response = await fetch(
       `${REPO_SERVICE_URL}/v1/repos/${repo_id}/drafts`,
       {
@@ -21,7 +22,7 @@ export async function POST(
           "Content-Type": "application/json",
           Authorization: authHeader || "",
         },
-        body: "{}",
+        body: rawBody || "{}",
       }
     );
 

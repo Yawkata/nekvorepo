@@ -97,6 +97,7 @@ export default function DraftPage() {
 
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [copyingDraft, setCopyingDraft] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [localFolders, setLocalFolders] = useState<ExplorerEntry[]>([]);
@@ -390,6 +391,68 @@ export default function DraftPage() {
     }
   }
 
+  async function handleCopyDraft() {
+    if (copyingDraft || !repoId) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const sourceLabel = (draft?.label || "").trim();
+    const suggestedLabel = sourceLabel
+      ? `${sourceLabel} copy`
+      : "Copy of draft";
+    const rawName = window.prompt("Name for the copied draft:", suggestedLabel);
+    if (rawName === null) return;
+
+    const label = rawName.trim();
+    if (!label) {
+      alert("Draft name cannot be empty.");
+      return;
+    }
+    if (label.length > 100) {
+      alert("Draft name must be 100 characters or fewer.");
+      return;
+    }
+
+    setCopyingDraft(true);
+    try {
+      const res = await fetch(`/api/repos/${repoId}/drafts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ label }),
+      });
+
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        alert(extractErrorMessage(data, "Failed to copy draft"));
+        return;
+      }
+
+      const nextDraftId = data.draft_id ?? data.id;
+      if (!nextDraftId) {
+        alert("Draft was created, but no draft ID was returned.");
+        return;
+      }
+
+      router.push(`/repo/${repoId}/draft/${nextDraftId}`);
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setCopyingDraft(false);
+    }
+  }
+
   async function handleRename(entry: ExplorerEntry) {
     const fromPath = entry.path || entry.name;
     const nextPath = window.prompt(`Rename "${fromPath}" to:`, fromPath);
@@ -609,6 +672,15 @@ export default function DraftPage() {
     const isFolder = entry.type === "folder" || entry.type === "tree";
     if (isFolder) return;
 
+    if (!entry.is_binary) {
+      router.push(
+        `/repo/${repoId}/draft/${draftId}/save?path=${encodeURIComponent(
+          filePath
+        )}`
+      );
+      return;
+    }
+
     const token = localStorage.getItem("token");
     if (!token) {
       router.push("/login");
@@ -716,6 +788,17 @@ export default function DraftPage() {
     (draft?.label && draft.label.trim()) ||
     `Draft — ${formatDate(draft?.created_at)}`;
 
+  const draftStatus = (draft?.status || "").toLowerCase();
+  const isReconstructing = draftStatus === "reconstructing";
+  const isPendingDraft = draftStatus === "pending";
+  const editingActionsDisabled = isReconstructing || isPendingDraft;
+  const disabledToolbarButtonStyle = {
+    ...styles.toolbarButtonDisabled,
+    ...(uploading || creatingFolder || copyingDraft || deletingApproved
+      ? styles.toolbarButtonBusy
+      : {}),
+  };
+
   return (
     <div style={styles.container}>
       {/* NAVBAR */}
@@ -767,18 +850,17 @@ export default function DraftPage() {
           <div style={styles.filesWrapper}>
             <div style={styles.filesToolbar}>
               {(() => {
-                const reconstructing =
-                  (draft?.status || "").toLowerCase() === "reconstructing";
+                const reconstructing = isReconstructing;
                 return (
                   <>
                     <button
                       onClick={handleSaveText}
-                      disabled={reconstructing}
+                      disabled={editingActionsDisabled}
                       style={{
                         ...styles.toolbarButton,
                         ...styles.btnSecondary,
-                        ...(reconstructing
-                          ? { opacity: 0.6, cursor: "not-allowed" }
+                        ...(editingActionsDisabled
+                          ? disabledToolbarButtonStyle
                           : {}),
                       }}
                       title={
@@ -792,12 +874,12 @@ export default function DraftPage() {
 
                     <button
                       onClick={triggerUpload}
-                      disabled={uploading || reconstructing}
+                      disabled={uploading || editingActionsDisabled}
                       style={{
                         ...styles.toolbarButton,
                         ...styles.btnSecondary,
-                        ...(uploading || reconstructing
-                          ? { opacity: 0.6, cursor: "wait" }
+                        ...(uploading || editingActionsDisabled
+                          ? disabledToolbarButtonStyle
                           : {}),
                       }}
                       title={
@@ -811,12 +893,12 @@ export default function DraftPage() {
 
                     <button
                       onClick={handleCreateFolder}
-                      disabled={creatingFolder || reconstructing}
+                      disabled={creatingFolder || editingActionsDisabled}
                       style={{
                         ...styles.toolbarButton,
                         ...styles.btnSecondary,
-                        ...(creatingFolder || reconstructing
-                          ? { opacity: 0.6, cursor: "wait" }
+                        ...(creatingFolder || editingActionsDisabled
+                          ? disabledToolbarButtonStyle
                           : {}),
                       }}
                       title={
@@ -830,6 +912,25 @@ export default function DraftPage() {
                   </>
                 );
               })()}
+
+              <button
+                onClick={handleCopyDraft}
+                disabled={copyingDraft || isReconstructing}
+                style={{
+                  ...styles.toolbarButton,
+                  ...styles.btnSecondary,
+                  ...(copyingDraft || isReconstructing
+                    ? disabledToolbarButtonStyle
+                    : {}),
+                }}
+                title={
+                  isReconstructing
+                    ? "Waiting for files to be restoredвЂ¦"
+                    : "Create a new draft copy"
+                }
+              >
+                {copyingDraft ? "CopyingвЂ¦" : "Copy draft"}
+              </button>
 
               <input
                 ref={fileInputRef}
@@ -1197,6 +1298,16 @@ const styles: { [key: string]: CSSProperties } = {
     background: "transparent",
     color: TEXT,
     border: `1px solid ${BORDER}`,
+  },
+  toolbarButtonDisabled: {
+    opacity: 0.45,
+    cursor: "not-allowed",
+    background: "#11161d",
+    color: "#7d8590",
+    border: "1px solid #242b34",
+  },
+  toolbarButtonBusy: {
+    cursor: "wait",
   },
   filesRect: {
     width: "45vw",
