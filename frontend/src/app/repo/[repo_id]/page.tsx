@@ -78,6 +78,14 @@ type ConflictReview = {
   baseCommitHash: string | null;
   files: ConflictFile[];
   resolutions: Record<string, ConflictResolution>;
+  // Optional "save_as" target per type_collision root, used only when the
+  // root's resolution is "use_theirs" and the author wants to preserve their
+  // file content under a new path before HEAD wins.
+  saveAs: Record<string, string>;
+  // Roots of each type_collision group — only these paths require an
+  // explicit resolution from the author. Mirrors the backend algorithm
+  // (see _find_collision_roots in rebase.py).
+  collisionRoots: string[];
 };
 
 type Invite = {
@@ -323,6 +331,14 @@ export default function RepoPage() {
     () => drafts.filter((draft) => isDraftStale(draft, latestHeadHash)),
     [drafts, latestHeadHash]
   );
+  // Approved drafts are shown in the Commit History section, not here.
+  const visibleDrafts = useMemo(
+    () =>
+      drafts.filter(
+        (d) => (d.status || "").toLowerCase() !== "approved"
+      ),
+    [drafts]
+  );
 
   function isDraftStale(draft: Draft, headHash: string | null): boolean {
     if (draft.status === "needs_rebase" || draft.status === "sibling_rejected") {
@@ -339,12 +355,46 @@ export default function RepoPage() {
     return draft.status === "sibling_rejected" ? "sibling" : "rebase";
   }
 
-  function isConflictActionRequired(file: ConflictFile): boolean {
-    return (
-      file.category === "conflict" ||
-      file.category === "type_collision" ||
-      (file.category === "deleted_in_head" && file.has_draft_changes)
+  // Mirrors backend _find_collision_roots: a root is a type_collision path
+  // with no strictly-shorter type_collision path as a prefix.
+  function computeCollisionRoots(files: ConflictFile[]): string[] {
+    const collisionSet = new Set(
+      files.filter((f) => f.category === "type_collision").map((f) => f.path)
     );
+    const roots: string[] = [];
+    for (const path of collisionSet) {
+      const parts = path.split("/");
+      let isRoot = true;
+      for (let i = 1; i < parts.length; i++) {
+        if (collisionSet.has(parts.slice(0, i).join("/"))) {
+          isRoot = false;
+          break;
+        }
+      }
+      if (isRoot) roots.push(path);
+    }
+    return roots.sort();
+  }
+
+  function findCollisionRootFor(path: string, roots: string[]): string | null {
+    if (roots.includes(path)) return path;
+    for (const root of roots) {
+      if (path.startsWith(root + "/")) return root;
+    }
+    return null;
+  }
+
+  function isConflictActionRequired(
+    file: ConflictFile,
+    collisionRoots: string[]
+  ): boolean {
+    if (file.category === "conflict") return true;
+    if (file.category === "deleted_in_head" && file.has_draft_changes)
+      return true;
+    if (file.category === "type_collision") {
+      return collisionRoots.includes(file.path);
+    }
+    return false;
   }
 
   function conflictCategoryColor(category: string): string {
@@ -363,8 +413,24 @@ export default function RepoPage() {
     }
   }
 
-  function requiredConflictPaths(files: ConflictFile[]): string[] {
-    return files.filter(isConflictActionRequired).map((file) => file.path);
+  function requiredConflictPaths(
+    files: ConflictFile[],
+    collisionRoots: string[]
+  ): string[] {
+    return files
+      .filter((file) => isConflictActionRequired(file, collisionRoots))
+      .map((file) => file.path);
+  }
+
+  function setConflictSaveAs(path: string, saveAs: string) {
+    setConflictReview((current) =>
+      current
+        ? {
+            ...current,
+            saveAs: { ...current.saveAs, [path]: saveAs },
+          }
+        : current
+    );
   }
 
   function setConflictResolution(path: string, resolution: ConflictResolution) {
@@ -830,13 +896,14 @@ export default function RepoPage() {
     }
   }
 
-  async function loadRepoHead() {
+  async function loadRepoHead(signal?: AbortSignal) {
     const token = localStorage.getItem("token");
     if (!token || !repoId) return;
 
     try {
       const res = await fetch(`/api/repos/${repoId}/head`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal,
       });
       if (res.status === 401) {
         router.push("/login");
@@ -862,7 +929,9 @@ export default function RepoPage() {
         }
         return nextHead;
       });
-    } catch {
+    } catch (err) {
+      // AbortError on teardown / repo change is expected — swallow silently.
+      if ((err as { name?: string } | null)?.name === "AbortError") return;
       /* Keep polling quietly; the next interval can recover. */
     }
   }
@@ -925,6 +994,7 @@ export default function RepoPage() {
         head_commit_hash?: string;
         files?: ConflictFile[];
       };
+      const files = Array.isArray(result.files) ? result.files : [];
       setConflictReview({
         draft,
         draftId,
@@ -932,8 +1002,10 @@ export default function RepoPage() {
         mode,
         pinnedHead: result.head_commit_hash || latestHeadHash,
         baseCommitHash: result.base_commit_hash ?? draft.base_commit_hash ?? null,
-        files: Array.isArray(result.files) ? result.files : [],
+        files,
         resolutions: {},
+        saveAs: {},
+        collisionRoots: computeCollisionRoots(files),
       });
     } catch {
       setConflictError("Failed to connect to server");
@@ -952,7 +1024,10 @@ export default function RepoPage() {
       return;
     }
 
-    const requiredPaths = requiredConflictPaths(conflictReview.files);
+    const requiredPaths = requiredConflictPaths(
+      conflictReview.files,
+      conflictReview.collisionRoots
+    );
     const missing = requiredPaths.filter(
       (path) => !conflictReview.resolutions[path]
     );
@@ -968,6 +1043,25 @@ export default function RepoPage() {
     setRebasingDraftId(conflictReview.draftId);
     setConflictError(null);
     try {
+      const collisionRootSet = new Set(conflictReview.collisionRoots);
+      const resolutions = requiredPaths.map((path) => {
+        const choice = conflictReview.resolutions[path];
+        const entry: {
+          path: string;
+          resolution: ConflictResolution;
+          save_as?: string;
+        } = { path, resolution: choice };
+        // save_as is only valid for type_collision roots with use_theirs
+        if (
+          choice === "use_theirs" &&
+          collisionRootSet.has(path)
+        ) {
+          const saveAs = (conflictReview.saveAs[path] || "").trim();
+          if (saveAs) entry.save_as = saveAs;
+        }
+        return entry;
+      });
+
       const res = await fetch(
         `/api/repos/${repoId}/drafts/${conflictReview.draftId}/rebase`,
         {
@@ -978,10 +1072,7 @@ export default function RepoPage() {
           },
           body: JSON.stringify({
             expected_head_commit_hash: conflictReview.pinnedHead,
-            resolutions: requiredPaths.map((path) => ({
-              path,
-              resolution: conflictReview.resolutions[path],
-            })),
+            resolutions,
           }),
         }
       );
@@ -1014,6 +1105,25 @@ export default function RepoPage() {
           );
           await loadDrafts();
           await loadRepoHead();
+          return;
+        }
+      }
+
+      if (res.status === 422) {
+        const detail = (
+          data as {
+            detail?: {
+              error?: string;
+              paths?: string[];
+              message?: string;
+            };
+          }
+        ).detail;
+        if (detail?.error === "missing_resolutions") {
+          const paths = Array.isArray(detail.paths) ? detail.paths : [];
+          setConflictError(
+            `Missing resolutions for: ${paths.join(", ")}`
+          );
           return;
         }
       }
@@ -1290,9 +1400,23 @@ export default function RepoPage() {
   }
 
   function handleViewCommit(commit: Commit) {
+    const status = (commit.status || "").toLowerCase();
+    // Only block pending commits (they haven't been resolved yet and belong
+    // to the reviewer queue, not the history view). Approved, rejected, and
+    // sibling_rejected commits all have a reconstructible tree and can be
+    // inspected via /view?ref=<hash>.
+    if (status === "pending") {
+      alert("Pending commits aren't viewable here — use the Pending section.");
+      return;
+    }
     setExpandedFolders(new Set([""]));
     setOpenedFile(null);
+    setSearch("");
     void loadView(commit.commit_hash, commit);
+    // Scroll the main view rectangle into view for feedback.
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 
   async function loadHistory() {
@@ -1682,26 +1806,54 @@ export default function RepoPage() {
   useEffect(() => {
     if (!repoId || !UUID_RE.test(repoId)) return;
 
+    // Spec: poll /head every ~30s with ±5s jitter, paused while the tab is
+    // hidden, and re-fire immediately when the tab becomes visible. Jitter
+    // spreads polling load across clients and avoids a thundering-herd
+    // synchronisation with other tabs/users. We use setTimeout recursion
+    // (not setInterval) so each tick can pick its own delay independently.
     let stopped = false;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
 
-    const poll = () => {
-      if (!stopped && document.visibilityState === "visible") {
-        void loadRepoHead();
+    const jitteredDelay = () =>
+      25_000 + Math.floor(Math.random() * 10_001); // 25–35s
+
+    const schedule = (ms: number) => {
+      if (stopped) return;
+      timeoutId = setTimeout(tick, ms);
+    };
+
+    const tick = async () => {
+      if (stopped) return;
+      if (document.visibilityState !== "visible") {
+        // Tab is hidden — don't burn requests; the visibility handler will
+        // resume polling immediately when the user comes back.
+        return;
+      }
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        await loadRepoHead(controller.signal);
+      } finally {
+        schedule(jitteredDelay());
       }
     };
 
-    poll();
-    intervalId = setInterval(poll, 30_000);
-
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") poll();
+      if (document.visibilityState === "visible") {
+        if (timeoutId) clearTimeout(timeoutId);
+        void tick();
+      }
     };
+
+    // Kick off the first poll; subsequent ones are scheduled by `tick`.
+    void tick();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       stopped = true;
-      if (intervalId) clearInterval(intervalId);
+      if (timeoutId) clearTimeout(timeoutId);
+      controller?.abort();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1973,17 +2125,17 @@ export default function RepoPage() {
               )}
             </div>
             {!draftsCollapsed && (<>
-            {renameMode && drafts.length > 0 && (
+            {renameMode && visibleDrafts.length > 0 && (
               <div style={styles.deleteHint}>
                 Click a draft to rename it.
               </div>
             )}
-            {deleteMode && drafts.length > 0 && (
+            {deleteMode && visibleDrafts.length > 0 && (
               <div style={styles.deleteHint}>
                 Click a draft to delete it.
               </div>
             )}
-            {commitMode && drafts.length > 0 && (
+            {commitMode && visibleDrafts.length > 0 && (
               <div style={styles.deleteHint}>
                 Click a draft to submit it for review.
               </div>
@@ -2003,11 +2155,11 @@ export default function RepoPage() {
               <div style={{ ...styles.draftsState, color: "#ff6b6b" }}>
                 {draftsError}
               </div>
-            ) : drafts.length === 0 ? (
+            ) : visibleDrafts.length === 0 ? (
               <div style={styles.draftsState}>No drafts yet.</div>
             ) : (
               <ul style={styles.draftsList}>
-                {drafts.map((d) => {
+                {visibleDrafts.map((d) => {
                   const id = d.draft_id ?? d.id ?? "";
                   if (!id) return null;
                   const title =
@@ -2488,6 +2640,31 @@ export default function RepoPage() {
                         #{viewCommitHash.substring(0, 10)}
                       </span>
                     )}
+                    {selectedCommit &&
+                      (() => {
+                        const s = (selectedCommit.status || "").toLowerCase();
+                        if (s === "approved") return null;
+                        const color =
+                          s === "rejected" || s === "sibling_rejected"
+                            ? "#ff6b6b"
+                            : MUTED;
+                        return (
+                          <span
+                            style={{
+                              ...styles.viewBannerHash,
+                              color,
+                              borderColor: color,
+                            }}
+                            title={
+                              selectedCommit.reviewer_comment
+                                ? `Reviewer: ${selectedCommit.reviewer_comment}`
+                                : undefined
+                            }
+                          >
+                            {selectedCommit.status}
+                          </span>
+                        );
+                      })()}
                     {selectedCommit && (
                       <button
                         onClick={() => loadView()}
@@ -2852,9 +3029,10 @@ export default function RepoPage() {
                 onClick={handleFinalizeRebase}
                 disabled={
                   rebasingDraftId === conflictReview.draftId ||
-                  requiredConflictPaths(conflictReview.files).some(
-                    (path) => !conflictReview.resolutions[path]
-                  )
+                  requiredConflictPaths(
+                    conflictReview.files,
+                    conflictReview.collisionRoots
+                  ).some((path) => !conflictReview.resolutions[path])
                 }
                 style={{
                   ...styles.viewerDownload,
@@ -2886,7 +3064,12 @@ export default function RepoPage() {
               <div style={styles.conflictSummaryRow}>
                 <span>{conflictReview.files.length} files classified</span>
                 <span>
-                  {conflictReview.files.filter(isConflictActionRequired).length} need review
+                  {
+                    conflictReview.files.filter((f) =>
+                      isConflictActionRequired(f, conflictReview.collisionRoots)
+                    ).length
+                  }{" "}
+                  need review
                 </span>
               </div>
               {conflictReview.files.length === 0 ? (
@@ -2897,6 +3080,26 @@ export default function RepoPage() {
                 <ul style={styles.conflictList}>
                   {conflictReview.files.map((file) => {
                     const color = conflictCategoryColor(file.category);
+                    const actionRequired = isConflictActionRequired(
+                      file,
+                      conflictReview.collisionRoots
+                    );
+                    const collisionRoot =
+                      file.category === "type_collision"
+                        ? findCollisionRootFor(
+                            file.path,
+                            conflictReview.collisionRoots
+                          )
+                        : null;
+                    const isCollisionSibling =
+                      file.category === "type_collision" &&
+                      collisionRoot !== null &&
+                      collisionRoot !== file.path;
+                    const isCollisionRoot =
+                      file.category === "type_collision" &&
+                      collisionRoot === file.path;
+                    const currentChoice =
+                      conflictReview.resolutions[file.path];
                     return (
                       <li key={file.path} style={styles.conflictItem}>
                         <div style={styles.conflictFileTop}>
@@ -2918,8 +3121,13 @@ export default function RepoPage() {
                           {file.has_draft_changes && (
                             <span style={{ color: "#ffa94d" }}>draft changed</span>
                           )}
+                          {isCollisionSibling && collisionRoot && (
+                            <span style={{ color: MUTED }}>
+                              resolved via root: {collisionRoot}
+                            </span>
+                          )}
                         </div>
-                        {isConflictActionRequired(file) && (
+                        {actionRequired && (
                           <div style={styles.resolutionControls}>
                             <button
                               onClick={() =>
@@ -2927,8 +3135,7 @@ export default function RepoPage() {
                               }
                               style={{
                                 ...styles.resolutionButton,
-                                ...(conflictReview.resolutions[file.path] ===
-                                "keep_mine"
+                                ...(currentChoice === "keep_mine"
                                   ? styles.resolutionButtonActive
                                   : {}),
                               }}
@@ -2941,8 +3148,7 @@ export default function RepoPage() {
                               }
                               style={{
                                 ...styles.resolutionButton,
-                                ...(conflictReview.resolutions[file.path] ===
-                                "use_theirs"
+                                ...(currentChoice === "use_theirs"
                                   ? styles.resolutionButtonActive
                                   : {}),
                               }}
@@ -2951,6 +3157,21 @@ export default function RepoPage() {
                             </button>
                           </div>
                         )}
+                        {actionRequired &&
+                          isCollisionRoot &&
+                          currentChoice === "use_theirs" && (
+                            <div style={styles.resolutionControls}>
+                              <input
+                                type="text"
+                                placeholder="Optional: save my version as… (new path)"
+                                value={conflictReview.saveAs[file.path] || ""}
+                                onChange={(e) =>
+                                  setConflictSaveAs(file.path, e.target.value)
+                                }
+                                style={styles.searchInput}
+                              />
+                            </div>
+                          )}
                       </li>
                     );
                   })}
@@ -3004,7 +3225,7 @@ const styles: { [key: string]: CSSProperties } = {
     flex: 1,
   },
   sidebar: {
-    width: 260,
+    width: 268,
     borderRight: `1px solid ${PURPLE}`,
     padding: 20,
     display: "flex",
@@ -3377,6 +3598,8 @@ const styles: { [key: string]: CSSProperties } = {
     listStyle: "none",
     margin: 0,
     padding: 0,
+    maxHeight: 260,
+    overflowY: "auto",
     display: "flex",
     flexDirection: "column",
     gap: 6,
@@ -3656,6 +3879,8 @@ const styles: { [key: string]: CSSProperties } = {
     listStyle: "none",
     margin: 0,
     padding: 0,
+    maxHeight: 260,
+    overflowY: "auto",
   },
   commitItem: {
     display: "flex",

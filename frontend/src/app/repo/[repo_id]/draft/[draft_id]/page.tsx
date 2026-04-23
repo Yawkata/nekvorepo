@@ -160,36 +160,70 @@ export default function DraftPage() {
       return;
     }
 
-    // Pull the draft metadata from the repo's drafts list.
-    fetch(`/api/repos/${repoId}/drafts`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
-        if (res.status === 401) {
-          router.push("/login");
-          return null;
-        }
-        const data = await res.json().catch(() => []);
-        if (!res.ok) return null;
-        return Array.isArray(data) ? data : [];
-      })
-      .then((list) => {
-        if (!list) return;
-        const found = list.find(
-          (d: Draft) => (d.draft_id ?? d.id) === draftId
-        );
-        if (found) {
-          setDraft(found);
-          if ((found.status || "").toLowerCase() === "approved") {
-            setShowApprovedModal(true);
-          }
-        }
-      })
-      .catch(() => {});
-
+    void loadDraftMeta();
     loadExplorer();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId, draftId, router]);
+
+  async function loadDraftMeta(): Promise<Draft | null> {
+    const token = localStorage.getItem("token");
+    if (!token || !repoId || !draftId) return null;
+    try {
+      const res = await fetch(`/api/repos/${repoId}/drafts`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return null;
+      }
+      const data = await res.json().catch(() => []);
+      if (!res.ok) return null;
+      const list = Array.isArray(data) ? data : [];
+      const found = list.find(
+        (d: Draft) => (d.draft_id ?? d.id) === draftId
+      );
+      if (!found) return null;
+      setDraft(found);
+      if ((found.status || "").toLowerCase() === "approved") {
+        setShowApprovedModal(true);
+      }
+      return found;
+    } catch {
+      return null;
+    }
+  }
+
+  // While the draft is in `reconstructing` state the backend is copying the
+  // HEAD snapshot into EFS. Poll until it transitions to `editing` (or any
+  // terminal status) and then reload the explorer so the copied files appear.
+  useEffect(() => {
+    const status = (draft?.status || "").toLowerCase();
+    if (status !== "reconstructing") return;
+
+    let stopped = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      const fresh = await loadDraftMeta();
+      const freshStatus = (fresh?.status || "").toLowerCase();
+      if (stopped) return;
+      if (freshStatus === "reconstructing") {
+        timeoutId = setTimeout(tick, 1500);
+      } else {
+        // Reconstruction finished (editing, needs_rebase, etc.) — pull the
+        // file list so the author sees the files copied from HEAD.
+        void loadExplorer();
+      }
+    };
+
+    timeoutId = setTimeout(tick, 1500);
+    return () => {
+      stopped = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.status]);
 
   async function loadExplorer() {
     const token = localStorage.getItem("token");
@@ -732,39 +766,70 @@ export default function DraftPage() {
           {/* FILES SECTION */}
           <div style={styles.filesWrapper}>
             <div style={styles.filesToolbar}>
-              <button
-                onClick={handleSaveText}
-                style={{
-                  ...styles.toolbarButton,
-                  ...styles.btnSecondary,
-                }}
-              >
-                Save a text file
-              </button>
+              {(() => {
+                const reconstructing =
+                  (draft?.status || "").toLowerCase() === "reconstructing";
+                return (
+                  <>
+                    <button
+                      onClick={handleSaveText}
+                      disabled={reconstructing}
+                      style={{
+                        ...styles.toolbarButton,
+                        ...styles.btnSecondary,
+                        ...(reconstructing
+                          ? { opacity: 0.6, cursor: "not-allowed" }
+                          : {}),
+                      }}
+                      title={
+                        reconstructing
+                          ? "Waiting for files to be restored…"
+                          : undefined
+                      }
+                    >
+                      Save a text file
+                    </button>
 
-              <button
-                onClick={triggerUpload}
-                disabled={uploading}
-                style={{
-                  ...styles.toolbarButton,
-                  ...styles.btnSecondary,
-                  ...(uploading ? { opacity: 0.6, cursor: "wait" } : {}),
-                }}
-              >
-                {uploading ? "Uploading…" : "Upload binary file"}
-              </button>
+                    <button
+                      onClick={triggerUpload}
+                      disabled={uploading || reconstructing}
+                      style={{
+                        ...styles.toolbarButton,
+                        ...styles.btnSecondary,
+                        ...(uploading || reconstructing
+                          ? { opacity: 0.6, cursor: "wait" }
+                          : {}),
+                      }}
+                      title={
+                        reconstructing
+                          ? "Waiting for files to be restored…"
+                          : undefined
+                      }
+                    >
+                      {uploading ? "Uploading…" : "Upload binary file"}
+                    </button>
 
-              <button
-                onClick={handleCreateFolder}
-                disabled={creatingFolder}
-                style={{
-                  ...styles.toolbarButton,
-                  ...styles.btnSecondary,
-                  ...(creatingFolder ? { opacity: 0.6, cursor: "wait" } : {}),
-                }}
-              >
-                {creatingFolder ? "Creating…" : "Create folder"}
-              </button>
+                    <button
+                      onClick={handleCreateFolder}
+                      disabled={creatingFolder || reconstructing}
+                      style={{
+                        ...styles.toolbarButton,
+                        ...styles.btnSecondary,
+                        ...(creatingFolder || reconstructing
+                          ? { opacity: 0.6, cursor: "wait" }
+                          : {}),
+                      }}
+                      title={
+                        reconstructing
+                          ? "Waiting for files to be restored…"
+                          : undefined
+                      }
+                    >
+                      {creatingFolder ? "Creating…" : "Create folder"}
+                    </button>
+                  </>
+                );
+              })()}
 
               <input
                 ref={fileInputRef}
@@ -806,7 +871,12 @@ export default function DraftPage() {
             </div>
 
             <div style={styles.filesRect}>
-              {loading ? (
+              {(draft?.status || "").toLowerCase() === "reconstructing" ? (
+                <div style={styles.emptyFiles}>
+                  Restoring files from the latest commit… this usually takes
+                  a few seconds.
+                </div>
+              ) : loading ? (
                 <div style={styles.emptyFiles}>Loading draft files…</div>
               ) : error ? (
                 <div style={{ ...styles.emptyFiles, color: "#ff6b6b" }}>
