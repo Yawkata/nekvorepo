@@ -83,7 +83,11 @@ jobs:
         if: steps.exists.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
-          context: ${{ hashFiles(format('services/{0}/Dockerfile', matrix.service)) != '' && format('services/{0}', matrix.service) || matrix.service }}
+          # Context is the REPO ROOT because service Dockerfiles COPY
+          # sibling paths like `services/shared`. A per-service context
+          # hides those paths and fails at COPY time.
+          context: .
+          file: ${{ hashFiles(format('services/{0}/Dockerfile', matrix.service)) != '' && format('services/{0}/Dockerfile', matrix.service) || format('{0}/Dockerfile', matrix.service) }}
           push: true
           platforms: linux/arm64
           tags: |
