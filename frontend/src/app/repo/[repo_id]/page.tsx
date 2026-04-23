@@ -86,7 +86,13 @@ type ToolbarAction = {
 
 function actionsForRole(
   role: string | undefined,
-  handlers: { onNewDraft: () => void; onInviteMember: () => void; inviting: boolean }
+  handlers: {
+    onNewDraft: () => void;
+    onInviteMember: () => void;
+    inviting: boolean;
+    onDeleteRepo: () => void;
+    deletingRepo: boolean;
+  }
 ): ToolbarAction[] {
   const normalized = (role || "").toLowerCase();
   const newDraft: ToolbarAction = {
@@ -103,24 +109,22 @@ function actionsForRole(
     case "admin":
       return [
         newDraft,
-        { label: "Review Queue", variant: "secondary" },
         inviteMember,
-        { label: "Manage", variant: "secondary" },
-        { label: "View Current", variant: "secondary" },
         { label: "Download ZIP", variant: "secondary" },
-        { label: "Delete Repository", variant: "danger" },
+        {
+          label: handlers.deletingRepo ? "Deleting..." : "Delete Repository",
+          variant: "danger",
+          onClick: handlers.onDeleteRepo,
+        },
       ];
     case "author":
       return [
         newDraft,
-        { label: "View Current", variant: "secondary" },
         { label: "Download ZIP", variant: "secondary" },
       ];
     case "reviewer":
       return [
-        { label: "Review Queue", variant: "primary" },
-        { label: "View Current", variant: "secondary" },
-        { label: "Download ZIP", variant: "secondary" },
+        { label: "Download ZIP", variant: "primary" },
       ];
     case "reader":
     default:
@@ -258,6 +262,7 @@ export default function RepoPage() {
   const [openedFile, setOpenedFile] = useState<OpenFile | null>(null);
   const [openingFilePath, setOpeningFilePath] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
+  const [deletingRepo, setDeletingRepo] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [invitesLoading, setInvitesLoading] = useState(false);
   const [invitesError, setInvitesError] = useState<string | null>(null);
@@ -1190,6 +1195,50 @@ export default function RepoPage() {
     }
   }
 
+  async function handleDeleteRepo() {
+    if (deletingRepo || !repoId) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    const repoName = repo?.repo_name || "this repository";
+    const confirmed = window.confirm(
+      `Delete "${repoName}"?\n\nThis action cannot be undone. All drafts, commits, and files will be permanently removed.`
+    );
+    if (!confirmed) return;
+
+    setDeletingRepo(true);
+    try {
+      const res = await fetch(`/api/repos/${repoId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok && res.status !== 204) {
+        const text = await res.text();
+        let data: unknown = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            /* ignore */
+          }
+        }
+        alert(extractErrorMessage(data, "Failed to delete repository"));
+        return;
+      }
+      router.push("/homepage");
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setDeletingRepo(false);
+    }
+  }
+
   async function handleNewDraft() {
     if (creatingDraft || !repoId) return;
     const token = localStorage.getItem("token");
@@ -1997,9 +2046,12 @@ export default function RepoPage() {
                     onNewDraft: handleNewDraft,
                     onInviteMember: handleInviteMember,
                     inviting,
+                    onDeleteRepo: handleDeleteRepo,
+                    deletingRepo,
                   }).map((action) => {
                     const isNewDraft = action.label === "+ New Draft";
-                    const disabled = isNewDraft && creatingDraft;
+                    const isDeleting = action.label === "Deleting...";
+                    const disabled = (isNewDraft && creatingDraft) || isDeleting;
                     return (
                       <button
                         key={action.label}

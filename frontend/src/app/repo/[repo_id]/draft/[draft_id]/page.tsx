@@ -102,6 +102,10 @@ export default function DraftPage() {
   const [localFolders, setLocalFolders] = useState<ExplorerEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Approved-draft acknowledgement modal
+  const [showApprovedModal, setShowApprovedModal] = useState(false);
+  const [deletingApproved, setDeletingApproved] = useState(false);
+
   // File viewer state
   const [openFile, setOpenFile] = useState<{
     name: string;
@@ -174,7 +178,12 @@ export default function DraftPage() {
         const found = list.find(
           (d: Draft) => (d.draft_id ?? d.id) === draftId
         );
-        if (found) setDraft(found);
+        if (found) {
+          setDraft(found);
+          if ((found.status || "").toLowerCase() === "approved") {
+            setShowApprovedModal(true);
+          }
+        }
       })
       .catch(() => {});
 
@@ -621,6 +630,54 @@ export default function DraftPage() {
     }
   }
 
+  async function handleAcknowledgeApproved() {
+    if (deletingApproved) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    setDeletingApproved(true);
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/drafts/${draftId}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok && res.status !== 204) {
+        const text = await res.text();
+        let data: unknown = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            /* ignore */
+          }
+        }
+        alert(extractErrorMessage(data, "Failed to delete draft"));
+        return;
+      }
+      // Clear any cached local folders for this draft.
+      try {
+        localStorage.removeItem(foldersStorageKey);
+      } catch {
+        /* ignore */
+      }
+      setShowApprovedModal(false);
+      router.push(`/repo/${repoId}`);
+    } catch {
+      alert("Failed to connect to server");
+    } finally {
+      setDeletingApproved(false);
+    }
+  }
+
   const draftTitle =
     (draft?.label && draft.label.trim()) ||
     `Draft — ${formatDate(draft?.created_at)}`;
@@ -852,6 +909,50 @@ export default function DraftPage() {
           </div>
         </main>
       </div>
+
+      {/* APPROVED DRAFT MODAL */}
+      {showApprovedModal && (
+        <div style={styles.modalOverlay}>
+          <div
+            style={{
+              ...styles.modalContent,
+              width: "420px",
+              height: "auto",
+              maxHeight: "none",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.modalHeader}>
+              <h2 style={styles.modalTitle}>Draft approved</h2>
+            </div>
+            <div style={{ ...styles.modalBody, flex: "0 0 auto" }}>
+              <p style={{ margin: 0, color: TEXT, fontSize: 14 }}>
+                This draft has been approved.
+              </p>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                padding: "12px 20px 16px",
+                borderTop: `1px solid ${BORDER}`,
+              }}
+            >
+              <button
+                onClick={handleAcknowledgeApproved}
+                disabled={deletingApproved}
+                style={{
+                  ...styles.toolbarButton,
+                  ...styles.btnPrimary,
+                  ...(deletingApproved ? { opacity: 0.6, cursor: "wait" } : {}),
+                }}
+              >
+                {deletingApproved ? "Deleting…" : "OK"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FILE VIEWER MODAL */}
       {openFile && (

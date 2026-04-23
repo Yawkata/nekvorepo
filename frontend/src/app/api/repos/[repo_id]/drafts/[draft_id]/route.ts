@@ -19,8 +19,19 @@ export async function DELETE(
       }
     );
 
+    if (response.status === 204) {
+      return new NextResponse(null, { status: 204 });
+    }
+
     const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    let data: unknown = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { error: text };
+      }
+    }
     return NextResponse.json(data, { status: response.status });
   } catch {
     return NextResponse.json(
