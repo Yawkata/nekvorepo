@@ -221,6 +221,10 @@ jobs:
               "${svc}=${ECR}/${PROJECT}/${svc}:${IMAGE_TAG}"
           done
 
+      - name: Delete prior migration Job (templates are immutable)
+        run: |
+          kubectl -n chrono-vcs delete job db-migrate --ignore-not-found --wait=true
+
       - name: Render + envsubst + apply
         run: |
           set -euo pipefail
@@ -243,16 +247,8 @@ jobs:
 
           kubectl apply -f /tmp/manifest.yaml
 
-      - name: Run migrations
+      - name: Wait for migrations
         run: |
-          set -euo pipefail
-          # Job is immutable once template is set; delete any prior instance
-          # before re-applying. --ignore-not-found makes first-run idempotent.
-          kubectl -n chrono-vcs delete job db-migrate --ignore-not-found
-          # Re-apply just the migration Job (kustomize already applied it; re-render for freshness)
-          kustomize build "k8s/overlays/${ENV_NAME}" \
-            | envsubst \
-            | kubectl apply -f - -l app.kubernetes.io/name=db-migrate || true
           kubectl -n chrono-vcs wait --for=condition=complete job/db-migrate --timeout=15m
 
       - name: Wait for rollouts
