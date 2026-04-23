@@ -1,0 +1,16 @@
+# Namespace already exists (created implicitly by pod_identity.tf mapping).
+# Applying it here is idempotent and lets us own its labels.
+#
+# Pod Security Standards: enforce the "restricted" profile at the namespace
+# level. Any pod that violates (privileged, hostPath, runAsRoot without
+# seccomp, etc.) is rejected by the kube-apiserver admission controller.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chrono-vcs
+  labels:
+    name: chrono-vcs
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

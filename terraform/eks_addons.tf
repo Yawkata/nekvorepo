@@ -31,6 +31,14 @@ resource "aws_eks_addon" "vpc_cni" {
   addon_name                  = "vpc-cni"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
+
+  # Enable in-kernel NetworkPolicy enforcement. Without this flag the
+  # policies in k8s/base/networkpolicies.yaml are accepted by the apiserver
+  # but never programmed into eBPF, so default-deny silently allows all
+  # traffic. 2026 baseline for any cluster claiming zero-trust networking.
+  configuration_values = jsonencode({
+    enableNetworkPolicy = "true"
+  })
 }
 
 # ---------------------------------------------------------------------------

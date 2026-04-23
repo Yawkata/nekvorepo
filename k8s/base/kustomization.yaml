@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: chrono-vcs
+
+commonLabels:
+  app.kubernetes.io/part-of: chrono-vcs
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - efs.yaml
+  - identity-service.yaml
+  - repo-service.yaml
+  - workflow-service.yaml
+  - frontend.yaml
+  - migration-job.yaml
+  - ingress.yaml
+  - networkpolicies.yaml
+
+# Image placeholders. Overlays override `newName` (ECR URL) and `newTag` (git SHA).
+images:
+  - name: identity-service
+  - name: repo-service
+  - name: workflow-service
+  - name: frontend
+  - name: database-migrations

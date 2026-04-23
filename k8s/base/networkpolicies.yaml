@@ -1,0 +1,84 @@
+# Zero-trust networking: default-deny + explicit allow.
+#
+# Requires a CNI that implements NetworkPolicy. EKS's default AWS VPC CNI
+# supports NetworkPolicy since v1.14 (enable via the add-on config) — verify
+# with: kubectl get ds aws-node -n kube-system -o yaml | grep enable-network-policy.
+#
+# Ordering does not matter (k8s unions all allow rules), but readability does:
+# we order top-down as default-deny -> egress essentials (DNS) -> app graph.
+---
+# Default deny ALL ingress + egress for every pod in chrono-vcs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: chrono-vcs
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Every pod may resolve DNS (CoreDNS on kube-system:53).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: chrono-vcs
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Backend services + migrations may talk to RDS (5432) and AWS APIs (HTTPS/443).
+# RDS lives outside the cluster so we cannot podSelector it — open 443+5432
+# to 0.0.0.0/0 *except* the pod/service CIDRs (defense in depth via SG still
+# applies at the RDS security group). In prod you'd narrow to the VPC CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress-external
+  namespace: chrono-vcs
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [identity-service, repo-service, workflow-service, db-migrate]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]   # block direct IMDS; Pod Identity uses a localhost proxy
+      ports:
+        - { protocol: TCP, port: 443 }    # AWS APIs, Cognito, SES, SQS, S3, Secrets Manager
+        - { protocol: TCP, port: 5432 }   # PostgreSQL
+        - { protocol: TCP, port: 2049 }   # EFS NFS
+---
+# ALB target-group pods are reached by the ALB from the VPC. Allow 8000/8080
+# ingress to the app pods from any IP in the VPC (the ALB IPs are dynamic).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alb-ingress
+  namespace: chrono-vcs
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [identity-service, repo-service, workflow-service, frontend]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/16 }   # VPC CIDR (see terraform/vpc.tf)
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 3000 }

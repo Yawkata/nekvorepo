@@ -1,0 +1,82 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: chrono-vcs
+
+resources:
+  - ../../base
+
+commonAnnotations:
+  chrono-vcs.io/environment: staging
+
+# Env var names below MUST match what the service settings modules read:
+#   identity-service:  DATABASE_URL, COGNITO_*, PASSPORT_SECRET_KEY, AWS_REGION,
+#                      SES_*, SNS_CACHE_INVALIDATION_TOPIC_ARN, CORS_ORIGINS,
+#                      WORKFLOW_SERVICE_URL, REPO_SERVICE_URL, INVITE_ACCEPT_BASE_URL
+#   repo-service:      DATABASE_URL, AWS_REGION, S3_REPO_BUCKET,
+#                      SQS_CACHE_INVALIDATION_QUEUE_URL, IDENTITY_SERVICE_URL,
+#                      EFS_DRAFTS_ROOT
+#   workflow-service:  DATABASE_URL, AWS_REGION, S3_REPO_BUCKET,
+#                      SQS_CACHE_INVALIDATION_QUEUE_URL, IDENTITY_SERVICE_URL,
+#                      REPO_SERVICE_URL
+#   frontend:          IDENTITY_SERVICE_URL, WORKFLOW_SERVICE_URL, REPO_SERVICE_URL
+configMapGenerator:
+  - name: identity-service-config
+    literals:
+      - AWS_REGION=us-east-1
+      - SES_FROM_EMAIL=${SES_FROM_EMAIL}
+      - SES_CONFIGURATION_SET_NAME=${SES_CONFIGURATION_SET_NAME}
+      - SNS_CACHE_INVALIDATION_TOPIC_ARN=${SNS_CACHE_INVALIDATION_TOPIC_ARN}
+      - INVITE_ACCEPT_BASE_URL=https://app-staging.${DOMAIN_NAME}
+      - WORKFLOW_SERVICE_URL=http://workflow-service.chrono-vcs.svc.cluster.local:8000
+      - REPO_SERVICE_URL=http://repo-service.chrono-vcs.svc.cluster.local:8000
+      - CORS_ORIGINS=https://app-staging.${DOMAIN_NAME}
+  - name: repo-service-config
+    literals:
+      - AWS_REGION=us-east-1
+      - S3_REPO_BUCKET=${S3_BUCKET_NAME}
+      - SQS_CACHE_INVALIDATION_QUEUE_URL=${REPO_CACHE_INVALIDATION_QUEUE_URL}
+      - IDENTITY_SERVICE_URL=http://identity-service.chrono-vcs.svc.cluster.local:8000
+      - EFS_DRAFTS_ROOT=/mnt/efs/drafts
+      - CORS_ORIGINS=https://app-staging.${DOMAIN_NAME}
+  - name: workflow-service-config
+    literals:
+      - AWS_REGION=us-east-1
+      - S3_REPO_BUCKET=${S3_BUCKET_NAME}
+      - SQS_CACHE_INVALIDATION_QUEUE_URL=${WORKFLOW_CACHE_INVALIDATION_QUEUE_URL}
+      - IDENTITY_SERVICE_URL=http://identity-service.chrono-vcs.svc.cluster.local:8000
+      - REPO_SERVICE_URL=http://repo-service.chrono-vcs.svc.cluster.local:8000
+      - CORS_ORIGINS=https://app-staging.${DOMAIN_NAME}
+  - name: frontend-config
+    literals:
+      # Frontend runs server-side in the pod; it reaches backends via
+      # in-cluster DNS, never through the public ALB.
+      - IDENTITY_SERVICE_URL=http://identity-service.chrono-vcs.svc.cluster.local:8000
+      - WORKFLOW_SERVICE_URL=http://workflow-service.chrono-vcs.svc.cluster.local:8000
+      - REPO_SERVICE_URL=http://repo-service.chrono-vcs.svc.cluster.local:8000
+      - NEXT_PUBLIC_API_BASE_URL=https://api-staging.${DOMAIN_NAME}
+      - NODE_ENV=production
+
+replicas:
+  - { name: identity-service, count: 1 }
+  - { name: repo-service,     count: 1 }
+  - { name: workflow-service, count: 1 }
+  - { name: frontend,         count: 1 }
+
+patches:
+  - target: { kind: PersistentVolume, name: repo-drafts-pv }
+    patch: |-
+      - op: replace
+        path: /spec/csi/volumeHandle
+        value: ${EFS_FILE_SYSTEM_ID}::${EFS_ACCESS_POINT_ID}
+  - target: { kind: Ingress, name: chrono-vcs-public }
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: app-staging.${DOMAIN_NAME}
+      - op: replace
+        path: /spec/rules/1/host
+        value: api-staging.${DOMAIN_NAME}
+      - op: add
+        path: /metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn
+        value: ${ACM_CERTIFICATE_ARN}

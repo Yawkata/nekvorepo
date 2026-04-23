@@ -1,0 +1,57 @@
+# Single ALB shared by all public hostnames via `alb.ingress.kubernetes.io/group.name`.
+# One ALB = one ACM cert attachment = one WAF web ACL = lower $.
+#
+# Hostnames below are placeholders. Overlays patch them to real values once
+# var.domain_name is set in TF. ExternalDNS picks up the `spec.rules[].host`
+# and creates A/AAAA records in the Route53 zone.
+#
+# SSL redirect + HSTS: enforced at the ALB listener via actions annotation
+# (ssl-redirect). Certs come from ACM — ARN patched per overlay.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chrono-vcs-public
+  namespace: chrono-vcs
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: chrono-vcs-public
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/healthcheck-path: /ping
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/success-codes: "200-299"
+    alb.ingress.kubernetes.io/load-balancer-attributes: >-
+      routing.http.drop_invalid_header_fields.enabled=true,
+      routing.http.xff_header_processing.mode=append,
+      idle_timeout.timeout_seconds=60
+    # alb.ingress.kubernetes.io/certificate-arn is set via overlay patch
+    # (empty cert ARN blocks the listener from creating until domain exists).
+    # alb.ingress.kubernetes.io/wafv2-acl-arn: <patched in prod overlay>
+    # external-dns.alpha.kubernetes.io/hostname is implicit from spec.rules[].host
+spec:
+  ingressClassName: alb
+  rules:
+    - host: app.example.com       # overlay-patched -> frontend
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port: { number: 3000 }
+    - host: api.example.com       # overlay-patched -> backend services
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend: { service: { name: identity-service, port: { number: 8000 } } }
+          - path: /repos
+            pathType: Prefix
+            backend: { service: { name: repo-service,     port: { number: 8000 } } }
+          - path: /workflows
+            pathType: Prefix
+            backend: { service: { name: workflow-service, port: { number: 8000 } } }

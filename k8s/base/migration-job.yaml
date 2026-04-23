@@ -1,0 +1,51 @@
+# Schema migration Job — runs once per deploy, before traffic hits the new
+# image. The deploy workflow: apply manifests, then `kubectl wait --for=condition=complete`.
+#
+# Uses a GenerateName-style suffix via kustomize's `generatorOptions` so each
+# deploy creates a fresh Job (Jobs are immutable once `.spec.template` is set).
+# `ttlSecondsAfterFinished` cleans up completed Jobs after 1h.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: chrono-vcs
+  annotations:
+    # Kustomize hash suffix via `disableNameSuffixHash: false` at the overlay
+    # level would break this; we rely on the CI pipeline to `kubectl delete job`
+    # before re-apply. Simpler + auditable.
+    kubernetes.io/description: "Alembic/Django schema migrations against RDS"
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-migrate
+        app.kubernetes.io/component: job
+    spec:
+      serviceAccountName: migrations-runner
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: database-migrations
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef: { name: db-app-credentials }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }

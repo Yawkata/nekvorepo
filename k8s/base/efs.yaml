@@ -1,0 +1,45 @@
+# EFS for repo-service draft storage.
+#
+# StaticProvisioning vs dynamic: we use a STATIC PV bound to a pre-existing
+# EFS access point (created in terraform/efs.tf). Dynamic provisioning with
+# the EFS CSI driver would create a new access point per PVC — fine, but it
+# sidesteps the TF-managed UID/GID/permissions contract. Static is simpler
+# and audit-friendly.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: repo-drafts-pv
+spec:
+  capacity:
+    storage: 50Gi  # EFS ignores this; required by the PV schema.
+  volumeMode: Filesystem
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-sc
+  csi:
+    driver: efs.csi.aws.com
+    # volumeHandle format: <fs-id>::<access-point-id>
+    # Patched per-overlay from TF outputs; placeholder keeps base renderable.
+    volumeHandle: "fs-PLACEHOLDER::fsap-PLACEHOLDER"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: repo-drafts-pvc
+  namespace: chrono-vcs
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 50Gi
+  volumeName: repo-drafts-pv
