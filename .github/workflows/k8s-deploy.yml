@@ -200,7 +200,7 @@ jobs:
             --from-literal=DB_HOST="$DB_HOST" \
             --from-literal=DB_PORT=5432 \
             --from-literal=DB_NAME=chrono_vcs_db \
-            --from-literal=DATABASE_URL="postgresql://postgres_admin:${DB_PASSWORD}@${DB_HOST}:5432/chrono_vcs_db" \
+            --from-literal=DATABASE_URL="postgresql+psycopg://postgres_admin:${DB_PASSWORD}@${DB_HOST}:5432/chrono_vcs_db" \
             --from-literal=IDENTITY_DB_PASSWORD="$IDENTITY_DB_PASSWORD" \
             --from-literal=REPO_DB_PASSWORD="$REPO_DB_PASSWORD" \
             --from-literal=WORKFLOW_DB_PASSWORD="$WORKFLOW_DB_PASSWORD" \
