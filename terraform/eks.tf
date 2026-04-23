@@ -119,10 +119,13 @@ resource "aws_eks_cluster" "main" {
     subnet_ids              = module.vpc.private_subnets
     endpoint_private_access = true
     endpoint_public_access  = true
-    # Restrict public API access to your IPs for safety. If empty, AWS
-    # defaults to 0.0.0.0/0 (still AuthN-protected by IAM, but every bot
-    # on the internet can scan the port).
-    public_access_cidrs = length(var.allowed_ips) > 0 ? var.allowed_ips : ["0.0.0.0/0"]
+    # Public endpoint is IAM-authenticated via Access Entries; leaving it
+    # open to 0.0.0.0/0 is AWS's own default and is acceptable here because
+    # CI runners (GitHub Actions) have dynamic egress IPs. Lock down via
+    # var.eks_public_access_cidrs only if you move CI to a fixed-IP runner
+    # or a VPC-resident self-hosted runner. Note: restricting this WILL
+    # break the in-cluster Helm provider from GitHub-hosted runners.
+    public_access_cidrs = length(var.eks_public_access_cidrs) > 0 ? var.eks_public_access_cidrs : ["0.0.0.0/0"]
   }
 
   encryption_config {
@@ -192,6 +195,37 @@ resource "aws_eks_access_policy_association" "admin" {
   }
 
   depends_on = [aws_eks_access_entry.admin]
+}
+
+# ---------------------------------------------------------------------------
+# Additional human-operator cluster admins (from var.cluster_admin_principal_arns).
+#
+# The GitHubActions-OIDC-Role above only works inside CI. Developers need
+# their own IAM user/role ARNs listed here so kubectl works from laptops.
+# Root account ARNs are deliberately unsupported — AWS treats root specially
+# and you should never be using root credentials for day-to-day work.
+# ---------------------------------------------------------------------------
+
+resource "aws_eks_access_entry" "extra_admins" {
+  for_each = toset(var.cluster_admin_principal_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "extra_admins" {
+  for_each = toset(var.cluster_admin_principal_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.extra_admins]
 }
 
 # ---------------------------------------------------------------------------

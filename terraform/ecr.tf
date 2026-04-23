@@ -47,6 +47,12 @@ resource "aws_ecr_repository" "services" {
   name                 = "${var.project_name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
 
+  # Without this, `terraform destroy` fails the moment the repo has any
+  # images. For staging where we rebuild from source, losing images on
+  # destroy is the desired behavior. For prod, invert this and empty
+  # repos out-of-band before destroy (or just never destroy).
+  force_delete = var.environment != "prod"
+
   image_scanning_configuration {
     scan_on_push = true
   }

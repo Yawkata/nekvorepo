@@ -15,7 +15,17 @@ variable "db_password" {
 
 variable "allowed_ips" {
   type        = list(string)
-  description = "List of developer IPs"
+  description = "Developer IPs allowed to reach application security groups (NOT the EKS API)."
+  default     = []
+}
+
+# EKS public API endpoint allowlist. Separate from allowed_ips because the
+# caller list is different: CI runners + operators, not end-users.
+# Default wide-open is safe here — Access Entries + IAM already authenticate
+# every request; restricting by IP is defense-in-depth, not the gate.
+variable "eks_public_access_cidrs" {
+  type        = list(string)
+  description = "CIDRs allowed to reach the EKS public API endpoint. Empty = 0.0.0.0/0."
   default     = []
 }
 
@@ -47,4 +57,10 @@ variable "await_acm_validation" {
   type        = bool
   description = "If true, Terraform blocks apply until ACM finishes DNS validation. Requires the domain's NS records to be delegated at the registrar first. Leave false until the domain is registered and delegated, otherwise apply will hang for 60 minutes and fail."
   default     = false
+}
+
+variable "cluster_admin_principal_arns" {
+  type        = list(string)
+  description = "Additional IAM user/role ARNs granted cluster-admin on EKS via access entries. Add your developer IAM user ARN here so kubectl works from your laptop. Never use the root account — create a dedicated IAM user."
+  default     = []
 }
