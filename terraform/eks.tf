@@ -182,7 +182,10 @@ resource "aws_eks_access_entry" "admin" {
 resource "aws_eks_access_policy_association" "admin" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = data.aws_iam_session_context.current.issuer_arn
-  policy_arn    = "arn:aws:iam::aws:policy/AmazonEKSClusterAdminPolicy"
+  # EKS access policies live in their own ARN namespace (arn:aws:eks:...),
+  # not the IAM policy namespace. Using an IAM ARN here returns
+  # InvalidParameterException at apply time.
+  policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
   access_scope {
     type = "cluster"
