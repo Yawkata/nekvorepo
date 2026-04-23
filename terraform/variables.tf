@@ -30,3 +30,15 @@ variable "frontend_url" {
   description = "Public URL of the frontend application, used to build invite accept links in emails (e.g. https://app.example.com). No trailing slash."
   default     = "http://localhost:3000"
 }
+
+variable "domain_name" {
+  type        = string
+  description = "Apex domain you intend to register (e.g. chronovcs.com). The Route53 hosted zone, DNSSEC, and ACM certificate are provisioned for this domain and its wildcard subdomain. No trailing dot. Leave blank before a domain is chosen — DNS/ACM resources will be skipped."
+  default     = ""
+}
+
+variable "environment" {
+  type        = string
+  description = "Deployment environment (staging or prod). Used as a tag on new resources."
+  default     = "staging"
+}
