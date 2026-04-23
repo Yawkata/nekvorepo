@@ -133,6 +133,11 @@ jobs:
           role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
           aws-region: ${{ env.AWS_REGION }}
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false   # we call `terraform output -raw` in shell
+
       - name: Install kustomize + kubectl
         run: |
           curl -sLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
