@@ -69,7 +69,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         if: steps.exists.outputs.build == 'true'
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
