@@ -1,38 +1,61 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.9
 
 # =========================================================================
 # Stage 1: Dependencies
-# Isolates npm ci so it is only re-run when package*.json change.
+# Chainguard node-dev = Wolfi-based, rolls forward to latest patched Node.
+# --ignore-scripts blocks arbitrary postinstall execution (supply-chain).
 # =========================================================================
-FROM node:22-alpine AS deps
-RUN apk add --no-cache libc6-compat
+FROM cgr.dev/chainguard/node:latest-dev AS deps
+USER root
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund
+    npm ci --no-audit --no-fund --ignore-scripts --prefer-offline
 
 # =========================================================================
-# Stage 2: Builder
-# Compiles the Next.js app and produces the `standalone` server output.
+# Stage 2: Builder — compiles Next.js into the `standalone` server output.
+# NODE_ENV is intentionally NOT set to `production` here: next build needs
+# devDependencies (typescript, @types/*, tailwind) to compile. It is set on
+# the runtime stage, which is what the Next.js server actually reads.
 # =========================================================================
-FROM node:22-alpine AS builder
+FROM cgr.dev/chainguard/node:latest-dev AS builder
+USER root
 WORKDIR /app
 
-ENV NEXT_TELEMETRY_DISABLED=1 \
-    NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-RUN npm run build
+RUN npm run build && \
+    rm -rf .next/cache
 
 # =========================================================================
-# Stage 3: Runtime
-# Minimal distroless-style image containing only the standalone server,
-# static assets, and public files. No package manager, no source, no dev deps.
+# Stage 3: Runtime — Chainguard Wolfi with ONLY the `nodejs` apk package.
+#
+# Why not `cgr.dev/chainguard/node`? That image bundles `npm`, and npm
+# vendors its own node_modules (release-please → @xmldom/xmldom, @octokit/*,
+# uuid). Those packages are unreachable at runtime (no shell, npm never
+# invoked) but scanners still flag them.
+#
+# Why not `gcr.io/distroless/nodejs22-debian12`? Google's distroless lags
+# Node patch releases (22.22.0 vs the current 22.22.2+ with fixes for
+# CVE-2025-55130 and friends). Chainguard Wolfi rolls forward continuously.
+#
+# `apk add nodejs` pulls node only (npm is a separate `npm` package we do
+# not install). Result: rolling-patched Node, no npm bundle, no xmldom CVEs.
 # =========================================================================
-FROM node:22-alpine AS runner
+FROM cgr.dev/chainguard/wolfi-base:latest AS runner
+LABEL org.opencontainers.image.description="Frontend (Next.js) for VCS-Hybrid App" \
+      org.opencontainers.image.source="https://github.com/Yawkata/nekvorepo"
+
+USER root
+# wolfi-base already ships the `nonroot` user/group (uid/gid 65532).
+RUN apk add --no-cache nodejs && \
+    mkdir -p /app /home/nonroot && \
+    chown -R 65532:65532 /app /home/nonroot
+
 WORKDIR /app
 
 ENV NODE_ENV=production \
@@ -40,20 +63,15 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-# Non-root user with a fixed high UID/GID (matches backend services convention).
-RUN addgroup -g 10001 -S nodejs && \
-    adduser  -u 10001 -S nextjs -G nodejs
+COPY --from=builder --chown=65532:65532 /app/.next/standalone ./
+COPY --from=builder --chown=65532:65532 /app/.next/static    ./.next/static
+COPY --from=builder --chown=65532:65532 /app/public          ./public
 
-# Standalone output ships a self-contained server.js + the minimal node_modules
-# required to run it. Static assets and /public must be copied alongside.
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static    ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public          ./public
-
-USER nextjs
+USER nonroot
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://127.0.0.1:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+    CMD ["/usr/bin/node", "-e", "require('http').get('http://127.0.0.1:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
 
-CMD ["node", "server.js"]
+ENTRYPOINT ["/usr/bin/node"]
+CMD ["server.js"]

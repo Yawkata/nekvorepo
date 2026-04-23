@@ -108,6 +108,27 @@ services:
       retries: 3
       start_period: 15s
 
+  # One-shot: fixes ownership of the local EFS bind-mount so the distroless
+  # repo-service container (uid 65532) can write drafts. The host directory
+  # is created by the Docker daemon as root when the mount first appears;
+  # without this step the service gets EACCES on every draft create.
+  # In production (EKS + EFS CSI) an access point sets ownership instead.
+  efs-init:
+    image: cgr.dev/chainguard/bash:latest
+    container_name: nekvo-efs-init
+    user: "0:0"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /mnt/efs/drafts && \
+        chown -R 65532:65532 /mnt/efs/drafts && \
+        chmod 0770 /mnt/efs/drafts
+    volumes:
+      - ./data/efs:/mnt/efs/drafts
+    restart: "no"
+    networks:
+      - chrono_network
+
   repo-service:
     build:
       context: .
@@ -135,6 +156,8 @@ services:
         condition: service_completed_successfully
       identity-service:
         condition: service_healthy
+      efs-init:
+        condition: service_completed_successfully
     volumes:
       - ./data/efs:/mnt/efs/drafts  # bind mount for local dev/testing
     networks:

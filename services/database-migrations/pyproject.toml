@@ -7,6 +7,7 @@ dependencies = [
     "alembic>=1.13.0",
     "psycopg[binary]>=3.1.18",  # 2026 Standard: Psycopg 3
     "sqlmodel>=0.0.16",
+    "mako>=1.3.11",             # transitive via alembic; pinned to fix GHSA-v92g-xgxw-vvmm
 ]
 
 # 2026 Best Practice: Define a build-system to make the project installable
