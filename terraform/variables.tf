@@ -35,7 +35,7 @@ variable "ses_sender_email" {
 variable "frontend_url" {
   type        = string
   description = "Public URL embedded in invite emails. Update after ALB DNS is known."
-  default     = "localhost:3000"
+  default     = "http://localhost:3000"
 }
 
 variable "cluster_version" {
