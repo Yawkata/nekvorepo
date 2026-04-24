@@ -1,11 +1,6 @@
 resource "aws_cognito_user_pool" "pool" {
   name = "${var.project_name}-user-pool"
 
-  # PLUS tier unlocks Threat Protection (Advanced Security). The older
-  # "advanced_security_mode" field is only honoured on PLUS / legacy-feature
-  # pools; ESSENTIALS rejects it with FeatureUnavailableInTierException.
-  user_pool_tier = "PLUS"
-
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
@@ -37,17 +32,19 @@ resource "aws_cognito_user_pool" "pool" {
     }
   }
 
+  # DEV: "OFF" (Advanced security costs ~$0.050 per active user)
+  # PROD: advanced_security_mode = "AUDIT" or "ENFORCED"
   user_pool_add_ons {
-    advanced_security_mode = "ENFORCED"
+    advanced_security_mode = "OFF"
   }
 
-  mfa_configuration = "OPTIONAL"
+  # DEV: "OFF" (Saves you from getting SMS charges if you don't have SES set up)
+  # PROD: mfa_configuration = "OPTIONAL"
+  mfa_configuration = "OFF"
 
-  software_token_mfa_configuration {
-    enabled = true
-  }
-
-  deletion_protection = "ACTIVE"
+  # software_token_mfa_configuration {
+  #   enabled = true
+  # }
 
   schema {
     attribute_data_type      = "String"

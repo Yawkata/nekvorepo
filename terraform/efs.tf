@@ -1,24 +1,8 @@
 resource "aws_efs_file_system" "draft_storage" {
-  creation_token   = "${var.project_name}-drafts"
-  encrypted        = true
-  performance_mode = "generalPurpose"
-  throughput_mode  = "elastic"
-
-  lifecycle_policy {
-    transition_to_ia = "AFTER_30_DAYS"
-  }
-  lifecycle_policy {
-    transition_to_primary_storage_class = "AFTER_1_ACCESS"
-  }
+  creation_token = "${var.project_name}-drafts"
+  encrypted      = true
 
   tags = { Name = "${var.project_name}-efs" }
-}
-
-resource "aws_efs_backup_policy" "draft_storage" {
-  file_system_id = aws_efs_file_system.draft_storage.id
-  backup_policy {
-    status = "ENABLED"
-  }
 }
 
 # Access Point: Forces the UID/GID to 1000 so permissions match Docker & EKS

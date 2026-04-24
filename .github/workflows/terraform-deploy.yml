@@ -1,83 +1,86 @@
-name: 'Deploy chrono-vcs to EKS'
+name: 'Terraform Infrastructure Pipeline'
 
 on:
   push:
     branches: [ "main" ]
+
   workflow_dispatch:
     inputs:
       action:
-        description: 'Pipeline action'
+        description: 'Terraform Action to perform'
         required: true
         default: 'plan'
         type: choice
         options:
-          - plan
-          - apply
-          - destroy
+        - plan
+        - apply
+        - destroy
 
 permissions:
   id-token: write
-  contents: read
+  contents: read 
 
 env:
-  AWS_REGION: us-east-1
-  PROJECT_NAME: chrono-vcs
-  ENVIRONMENT: prod
-  SSM_PREFIX: /chrono-vcs/prod
-  CLUSTER_NAME: chrono-vcs-eks
-  K8S_NAMESPACE: chrono
-  TF_VAR_db_password:  ${{ secrets.TF_VAR_DB_PASSWORD }}
-  TF_VAR_allowed_ips:  ${{ secrets.TF_VAR_ALLOWED_IPS }}
-  TF_IN_AUTOMATION: "true"
+  TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+  TF_VAR_allowed_ips: ${{ secrets.TF_VAR_ALLOWED_IPS }}
+  AWS_REGION: "us-east-1"
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────
-  # 1. terraform plan — always runs. Outputs an artifact used by later jobs.
-  # ─────────────────────────────────────────────────────────────────────────
   terraform-plan:
-    name: Terraform plan
+    name: 'Terraform'
     runs-on: ubuntu-latest
-    if: github.event.inputs.action != 'destroy'
+
     defaults:
       run:
         working-directory: ./terraform
+    
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.14.6"
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - run: terraform init -upgrade
-      - run: terraform fmt -check -recursive
-      - run: terraform validate
-      - run: terraform plan -input=false -no-color -out=tfplan
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
+        aws-region: ${{ env.AWS_REGION }}
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: terraform/tfplan
-          retention-days: 1
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.14.6"
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 2. terraform apply — on push or manual apply. Writes every output to SSM
-  #    so the in-cluster External Secrets Operator can sync them.
-  # ─────────────────────────────────────────────────────────────────────────
-  terraform-apply:
-    name: Terraform apply
+    - name: Terraform Init
+      run: terraform init -upgrade
+
+    - name: Terraform Format
+      run: terraform fmt -check
+
+    - name: Terraform Validate
+      run: terraform validate
+
+    - name: Terraform Plan
+      id: plan
+      run: terraform plan -input=false -no-color -out=tfplan
+
+    - name: Upload Plan Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan
+        path: terraform/tfplan
+
+  terraform-execute:
+    name: 'Terraform Execute'
     runs-on: ubuntu-latest
     needs: terraform-plan
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
-    environment: production
+
+    if: github.event_name == 'push' || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action != 'plan')
+    
+    environment: production 
+
     defaults:
       run:
         working-directory: ./terraform
-    outputs:
-      ecr_registry: ${{ steps.outs.outputs.ecr_registry }}
-      cluster_name: ${{ steps.outs.outputs.cluster_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -90,303 +93,43 @@ jobs:
 
       - run: terraform init
 
-      - uses: actions/download-artifact@v4
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
         with:
           name: tfplan
           path: terraform/
 
-      - name: Terraform apply
+      - name: Terraform Apply
+        if: github.event_name == 'push' || github.event.inputs.action == 'apply'
         run: terraform apply -auto-approve tfplan
 
-      - name: Export outputs to SSM + generate per-service DB URLs
-        id: outs
+      - name: Push outputs to SSM
+        if: github.event_name == 'push' || github.event.inputs.action == 'apply'
         run: |
-          set -euo pipefail
-          OUTS=$(terraform output -json)
+          OUTPUTS=$(terraform output -json)
 
-          RDS=$(echo "$OUTS" | jq -r '.rds_endpoint.value')
-          DB=chrono_vcs_db
-
-          # Rotate per-service passwords every apply, store in SSM (SecureString).
-          IDN_PW=$(openssl rand -base64 32 | tr -d '=+/' | head -c 24)
-          REP_PW=$(openssl rand -base64 32 | tr -d '=+/' | head -c 24)
-          WFL_PW=$(openssl rand -base64 32 | tr -d '=+/' | head -c 24)
-
-          put() {
-            aws ssm put-parameter --name "$1" --value "$2" --type "$3" \
-              --overwrite --region "$AWS_REGION"
+          push_param() {
+            local name=$1 value=$2 type=$3
+            aws ssm put-parameter \
+              --name "/chrono/dev/$name" \
+              --value "$value" \
+              --type "$type" \
+              --overwrite \
+              --region "$AWS_REGION"
           }
 
-          # Terraform outputs.
-          put "$SSM_PREFIX/cognito_pool_id"                    "$(echo "$OUTS" | jq -r .cognito_pool_id.value)"                  String
-          put "$SSM_PREFIX/cognito_client_id"                  "$(echo "$OUTS" | jq -r .cognito_client_id.value)"                String
-          put "$SSM_PREFIX/cognito_client_secret"              "$(echo "$OUTS" | jq -r .cognito_client_secret.value)"            SecureString
-          put "$SSM_PREFIX/s3_bucket_name"                     "$(echo "$OUTS" | jq -r .s3_bucket_name.value)"                   String
-          put "$SSM_PREFIX/rds_endpoint"                       "$RDS"                                                            String
-          put "$SSM_PREFIX/sns_cache_invalidation_topic_arn"   "$(echo "$OUTS" | jq -r .sns_cache_invalidation_topic_arn.value)" String
-          put "$SSM_PREFIX/repo_cache_invalidation_queue_url"  "$(echo "$OUTS" | jq -r .repo_cache_invalidation_queue_url.value)" String
-          put "$SSM_PREFIX/workflow_cache_invalidation_queue_url" "$(echo "$OUTS" | jq -r .workflow_cache_invalidation_queue_url.value)" String
-          put "$SSM_PREFIX/ses_configuration_set_name"         "$(echo "$OUTS" | jq -r .ses_configuration_set_name.value)"       String
-          put "$SSM_PREFIX/ses_from_email"                     "$(echo "$OUTS" | jq -r .ses_sender_email.value)"                 String
-          put "$SSM_PREFIX/frontend_url"                       "$(echo "$OUTS" | jq -r .frontend_url.value)"                     String
+          push_param "cognito_pool_id"       "$(echo "$OUTPUTS" | jq -r '.cognito_pool_id.value')"       "String"
+          push_param "cognito_client_id"     "$(echo "$OUTPUTS" | jq -r '.cognito_client_id.value')"     "String"
+          push_param "cognito_client_secret" "$(echo "$OUTPUTS" | jq -r '.cognito_client_secret.value')" "SecureString"
+          push_param "dev_access_key_id"     "$(echo "$OUTPUTS" | jq -r '.dev_access_key_id.value')"     "String"
+          push_param "dev_secret_access_key" "$(echo "$OUTPUTS" | jq -r '.dev_secret_access_key.value')" "SecureString"
+          push_param "s3_bucket_name"        "$(echo "$OUTPUTS" | jq -r '.s3_bucket_name.value')"        "String"
+          push_param "rds_endpoint"          "$(echo "$OUTPUTS" | jq -r '.rds_endpoint.value')"          "String"
+          push_param "sns_cache_invalidation_topic_arn"      "$(echo "$OUTPUTS" | jq -r '.sns_cache_invalidation_topic_arn.value')"      "String"
+          push_param "repo_cache_invalidation_queue_url"     "$(echo "$OUTPUTS" | jq -r '.repo_cache_invalidation_queue_url.value')"     "String"
+          push_param "workflow_cache_invalidation_queue_url" "$(echo "$OUTPUTS" | jq -r '.workflow_cache_invalidation_queue_url.value')" "String"
+          push_param "ses_configuration_set_name" "$(echo "$OUTPUTS" | jq -r '.ses_configuration_set_name.value')" "String"
 
-          # Per-service passwords.
-          put "$SSM_PREFIX/identity_db_password" "$IDN_PW" SecureString
-          put "$SSM_PREFIX/repo_db_password"     "$REP_PW" SecureString
-          put "$SSM_PREFIX/workflow_db_password" "$WFL_PW" SecureString
-
-          # Admin DB URL — fetch secretsmanager password for migrator & init-roles.
-          ADMIN_PW=$(aws secretsmanager get-secret-value \
-            --secret-id "${PROJECT_NAME}-db-password" --query SecretString --output text)
-          put "$SSM_PREFIX/database_url_admin" \
-              "postgresql+psycopg://postgres_admin:${ADMIN_PW}@${RDS}:5432/${DB}?sslmode=require" SecureString
-
-          # Per-service connection URLs.
-          put "$SSM_PREFIX/identity_database_url" \
-              "postgresql+psycopg://identity_svc_user:${IDN_PW}@${RDS}:5432/${DB}?sslmode=require" SecureString
-          put "$SSM_PREFIX/repo_database_url" \
-              "postgresql+psycopg://repo_svc_user:${REP_PW}@${RDS}:5432/${DB}?sslmode=require" SecureString
-          put "$SSM_PREFIX/workflow_database_url" \
-              "postgresql+psycopg://workflow_svc_user:${WFL_PW}@${RDS}:5432/${DB}?sslmode=require" SecureString
-
-          # Passport signing key — generate once, keep stable across applies.
-          if ! aws ssm get-parameter --name "$SSM_PREFIX/passport_secret_key" --region "$AWS_REGION" >/dev/null 2>&1; then
-            put "$SSM_PREFIX/passport_secret_key" "$(openssl rand -hex 32)" SecureString
-          fi
-
-          # Surface values the next jobs need.
-          REG=$(echo "$OUTS" | jq -r '.ecr_repository_urls.value["frontend"]' | cut -d/ -f1)
-          echo "ecr_registry=$REG"          >> "$GITHUB_OUTPUT"
-          echo "cluster_name=$(echo "$OUTS" | jq -r .cluster_name.value)" >> "$GITHUB_OUTPUT"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # 3. Build + push every image to ECR in parallel.
-  # ─────────────────────────────────────────────────────────────────────────
-  build-push:
-    name: Build & push — ${{ matrix.service }}
-    runs-on: ubuntu-latest
-    needs: terraform-apply
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: frontend
-            context: ./frontend
-            dockerfile: ./frontend/Dockerfile
-          - service: identity-service
-            context: .
-            dockerfile: services/identity-service/Dockerfile
-          - service: repo-service
-            context: .
-            dockerfile: services/repo-service/Dockerfile
-          - service: workflow-service
-            context: .
-            dockerfile: services/workflow-service/Dockerfile
-          - service: database-migrations
-            context: .
-            dockerfile: services/database-migrations/Dockerfile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file:    ${{ matrix.dockerfile }}
-          push:    true
-          provenance: false
-          tags: |
-            ${{ needs.terraform-apply.outputs.ecr_registry }}/${{ env.PROJECT_NAME }}/${{ matrix.service }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to:   type=gha,scope=${{ matrix.service }},mode=max
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # 4. Render kustomize overlay and apply to the cluster.
-  # ─────────────────────────────────────────────────────────────────────────
-  deploy-k8s:
-    name: Deploy to EKS
-    runs-on: ubuntu-latest
-    needs: [terraform-apply, build-push]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Install kubectl + kustomize
-        run: |
-          curl -sSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
-          chmod +x /usr/local/bin/kubectl
-          curl -sSL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
-          sudo mv kustomize /usr/local/bin/
-      - name: Configure kubeconfig
-        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
-
-      - name: Wait for External Secrets CRDs
-        run: |
-          for i in {1..30}; do
-            kubectl get crd clustersecretstores.external-secrets.io >/dev/null 2>&1 && break
-            sleep 5
-          done
-
-      - name: Set image tags in kustomization
-        working-directory: k8s/base
-        env:
-          REG: ${{ needs.terraform-apply.outputs.ecr_registry }}
-        run: |
-          for svc in frontend identity-service repo-service workflow-service database-migrations; do
-            kustomize edit set image "$svc=$REG/$PROJECT_NAME/$svc:${{ github.sha }}"
-          done
-
-      # Jobs have an immutable pod template — re-applying an existing Job
-      # fails with "spec.template: Invalid value". Delete any prior run's
-      # Jobs so `kubectl apply` creates fresh ones this run.
-      - name: Delete prior Jobs
-        run: |
-          kubectl -n "$K8S_NAMESPACE" delete job db-migrations init-db-roles \
-            --ignore-not-found --wait=true
-
-      - name: Apply base manifests (server-side)
-        # Server-side apply tracks per-field ownership, so concurrent changes
-        # from the AWS LB Controller (Ingress status/annotations) don't cause
-        # "object has been modified" conflicts. --force-conflicts re-claims
-        # any field we legitimately own that a controller last touched.
-        run: |
-          kustomize build k8s/base | \
-            kubectl apply --server-side --force-conflicts --field-manager=github-actions -f -
-
-      - name: Wait for db-migrations Job
-        # Runs first — schema must exist before init-db-roles GRANTs on it.
-        run: |
-          kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/db-migrations --timeout=10m || \
-            (kubectl -n "$K8S_NAMESPACE" logs job/db-migrations --tail=200; exit 1)
-
-      - name: Wait for init-db-roles Job
-        # backoffLimit=3 means this tolerates starting before migrations
-        # finish, but waiting for db-migrations first avoids the wasted retry.
-        run: |
-          kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/init-db-roles --timeout=5m || \
-            (kubectl -n "$K8S_NAMESPACE" logs job/init-db-roles --tail=200; exit 1)
-
-      - name: Wait for rollouts
-        run: |
-          for d in identity-service repo-service workflow-service frontend; do
-            kubectl -n "$K8S_NAMESPACE" rollout status deploy/"$d" --timeout=10m
-          done
-
-      - name: Print ingress URL
-        run: kubectl -n "$K8S_NAMESPACE" get ingress chrono -o wide
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # 5. Destroy path — K8s cleanup FIRST (so LB-controller releases the ALB
-  #    and ENIs), then terraform destroy.
-  # ─────────────────────────────────────────────────────────────────────────
-  destroy-k8s:
-    name: Destroy — drain Kubernetes
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Install kubectl
-        run: |
-          curl -sSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
-          chmod +x /usr/local/bin/kubectl
-
-      - name: Configure kubeconfig (skip if cluster gone)
-        id: kube
-        continue-on-error: true
-        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
-
-      - name: Delete Ingress first — releases the ALB + ENIs
-        if: steps.kube.outcome == 'success'
-        run: |
-          kubectl -n "$K8S_NAMESPACE" delete ingress --all --ignore-not-found --timeout=5m || true
-
-      - name: Delete Services of type LoadBalancer
-        if: steps.kube.outcome == 'success'
-        run: |
-          kubectl get svc -A -o json | jq -r \
-            '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | \
-            while read ns name; do kubectl -n "$ns" delete svc "$name" --ignore-not-found --timeout=5m; done
-
-      - name: Delete application namespace (clears PVCs/EFS APs)
-        if: steps.kube.outcome == 'success'
-        run: |
-          kubectl delete namespace "$K8S_NAMESPACE" --ignore-not-found --timeout=10m || true
-
-      - name: Wait for load-balancer cleanup
-        if: steps.kube.outcome == 'success'
-        run: |
-          for i in {1..60}; do
-            COUNT=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-              --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-')].LoadBalancerArn" \
-              --output text | wc -w)
-            if [ "$COUNT" = "0" ]; then echo "LBs drained"; break; fi
-            echo "Waiting for $COUNT LB(s) to drain…"
-            sleep 10
-          done
-
-  terraform-destroy:
-    name: Terraform destroy
-    runs-on: ubuntu-latest
-    needs: destroy-k8s
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
-    environment: production
-    defaults:
-      run:
-        working-directory: ./terraform
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.14.6"
-
-      - run: terraform init
-
-      # RDS has deletion_protection=true (production-correct). Flip it off
-      # in-place so destroy can proceed when the operator explicitly asks.
-      - name: Disable RDS deletion protection
-        run: |
-          aws rds modify-db-instance \
-            --db-instance-identifier "${PROJECT_NAME}-db" \
-            --no-deletion-protection \
-            --apply-immediately \
-            --region "$AWS_REGION" || true
-          aws rds wait db-instance-available \
-            --db-instance-identifier "${PROJECT_NAME}-db" \
-            --region "$AWS_REGION" || true
-
-      # Cognito user pool — deletion_protection=ACTIVE needs INACTIVE first.
-      - name: Disable Cognito deletion protection
-        run: |
-          POOL_ID=$(aws ssm get-parameter --name "$SSM_PREFIX/cognito_pool_id" \
-            --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-          if [ -n "$POOL_ID" ]; then
-            aws cognito-idp update-user-pool --user-pool-id "$POOL_ID" \
-              --deletion-protection INACTIVE --region "$AWS_REGION" || true
-          fi
-
-      - name: Terraform destroy
+      - name: Terraform Destroy
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
         run: terraform destroy -auto-approve
-
-      - name: Purge SSM parameters
-        run: |
-          aws ssm delete-parameters --region "$AWS_REGION" --names $(
-            aws ssm describe-parameters --region "$AWS_REGION" \
-              --parameter-filters "Key=Name,Option=BeginsWith,Values=$SSM_PREFIX/" \
-              --query 'Parameters[].Name' --output text
-          ) || true

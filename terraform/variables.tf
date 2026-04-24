@@ -1,18 +1,11 @@
 variable "aws_region" {
-  type    = string
   default = "us-east-1"
 }
 
 variable "project_name" {
   type        = string
-  description = "Prefix for every resource name."
+  description = "The name of the project, used as a prefix for resource naming"
   default     = "chrono-vcs"
-}
-
-variable "environment" {
-  type        = string
-  description = "Deployment environment tag (dev/staging/prod)."
-  default     = "prod"
 }
 
 variable "db_password" {
@@ -22,45 +15,18 @@ variable "db_password" {
 
 variable "allowed_ips" {
   type        = list(string)
-  description = "CIDRs allowed to reach the EKS public API endpoint. Keep tight."
+  description = "List of developer IPs"
   default     = []
 }
 
 variable "ses_sender_email" {
   type        = string
-  description = "Verified SES sender address. AWS emails a confirmation link on first apply."
+  description = "Verified SES sender address (e.g. noreply@example.com). AWS sends a confirmation email to this address on first apply."
   default     = "f.ermenkov@gmail.com"
 }
 
 variable "frontend_url" {
   type        = string
-  description = "Public URL embedded in invite emails. Update after ALB DNS is known."
+  description = "Public URL of the frontend application, used to build invite accept links in emails (e.g. https://app.example.com). No trailing slash."
   default     = "http://localhost:3000"
-}
-
-variable "cluster_version" {
-  type        = string
-  description = "EKS control-plane version."
-  default     = "1.31"
-}
-
-variable "node_instance_types" {
-  type        = list(string)
-  description = "Instance types for the managed node group. Multiple types help Spot stability."
-  default     = ["t3.large", "t3a.large", "m5.large"]
-}
-
-variable "node_group_min_size" {
-  type    = number
-  default = 3
-}
-
-variable "node_group_max_size" {
-  type    = number
-  default = 12
-}
-
-variable "node_group_desired_size" {
-  type    = number
-  default = 3
 }
