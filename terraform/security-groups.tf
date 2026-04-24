@@ -18,10 +18,17 @@ resource "aws_security_group" "backend_sg" {
 }
 
 # RDS — only reachable from EKS nodes.
+# SG description is immutable in AWS — changing it forces destroy+recreate,
+# which fails while RDS/EFS still reference the SG. ignore_changes keeps the
+# existing SG in place across edits to description/name.
 resource "aws_security_group" "rds_sg" {
   name        = "${var.project_name}-rds-sg"
   description = "Postgres access from EKS nodes only."
   vpc_id      = module.vpc.vpc_id
+
+  lifecycle {
+    ignore_changes = [description, name]
+  }
 }
 
 resource "aws_security_group_rule" "rds_ingress_from_nodes" {
@@ -48,6 +55,10 @@ resource "aws_security_group" "efs_sg" {
   name        = "${var.project_name}-efs-sg"
   description = "NFS access from EKS nodes only."
   vpc_id      = module.vpc.vpc_id
+
+  lifecycle {
+    ignore_changes = [description, name]
+  }
 }
 
 resource "aws_security_group_rule" "efs_ingress_from_nodes" {
