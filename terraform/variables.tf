@@ -35,7 +35,7 @@ variable "ses_sender_email" {
 variable "frontend_url" {
   type        = string
   description = "Public URL embedded in invite emails. Update after ALB DNS is known."
-  default     = "http://k8s-chrono-chrono-cff4d0ad1c-2036054473.us-east-1.elb.amazonaws.com/"
+  default     = "localhost:3000"
 }
 
 variable "cluster_version" {
