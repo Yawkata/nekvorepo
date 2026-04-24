@@ -255,8 +255,38 @@ jobs:
           kubectl apply -f /tmp/manifest.yaml
 
       - name: Wait for migrations
+        id: wait_migrations
         run: |
+          set +e
           kubectl -n chrono-vcs wait --for=condition=complete job/db-migrate --timeout=15m
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo "::group::Job describe"
+            kubectl -n chrono-vcs describe job/db-migrate || true
+            echo "::endgroup::"
+            echo "::group::Job-owned pods"
+            kubectl -n chrono-vcs get pods -l job-name=db-migrate -o wide || true
+            echo "::endgroup::"
+            echo "::group::Pod describe (events show ImagePullBackOff, CreateContainerConfigError, scheduling failures, etc.)"
+            for p in $(kubectl -n chrono-vcs get pods -l job-name=db-migrate -o name); do
+              kubectl -n chrono-vcs describe "$p" || true
+            done
+            echo "::endgroup::"
+            echo "::group::Pod logs (current + previous attempts)"
+            for p in $(kubectl -n chrono-vcs get pods -l job-name=db-migrate -o name); do
+              echo "--- current: $p"; kubectl -n chrono-vcs logs "$p" --all-containers --tail=400 || true
+              echo "--- previous: $p"; kubectl -n chrono-vcs logs "$p" --all-containers --previous --tail=400 || true
+            done
+            echo "::endgroup::"
+            echo "::group::Recent namespace events"
+            kubectl -n chrono-vcs get events --sort-by=.lastTimestamp | tail -80 || true
+            echo "::endgroup::"
+            echo "::group::Secret presence check (must be non-empty)"
+            kubectl -n chrono-vcs get secret db-app-credentials -o jsonpath='{.data}' | wc -c || true
+            echo "::endgroup::"
+            exit $rc
+          fi
 
       - name: Wait for rollouts
         run: |
