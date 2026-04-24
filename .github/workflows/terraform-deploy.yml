@@ -243,6 +243,14 @@ jobs:
             kustomize edit set image "$svc=$REG/$PROJECT_NAME/$svc:${{ github.sha }}"
           done
 
+      # Jobs have an immutable pod template — re-applying an existing Job
+      # fails with "spec.template: Invalid value". Delete any prior run's
+      # Jobs so `kubectl apply` creates fresh ones this run.
+      - name: Delete prior Jobs
+        run: |
+          kubectl -n "$K8S_NAMESPACE" delete job db-migrations init-db-roles \
+            --ignore-not-found --wait=true
+
       - name: Apply base manifests (server-side)
         # Server-side apply tracks per-field ownership, so concurrent changes
         # from the AWS LB Controller (Ingress status/annotations) don't cause
@@ -252,18 +260,18 @@ jobs:
           kustomize build k8s/base | \
             kubectl apply --server-side --force-conflicts --field-manager=github-actions -f -
 
-      - name: Run init-db-roles Job
-        run: |
-          kubectl -n "$K8S_NAMESPACE" delete job init-db-roles --ignore-not-found
-          kustomize build k8s/base | \
-            kubectl apply --server-side --force-conflicts --field-manager=github-actions -f -
-          kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/init-db-roles --timeout=5m || \
-            (kubectl -n "$K8S_NAMESPACE" logs job/init-db-roles; exit 1)
-
       - name: Wait for db-migrations Job
+        # Runs first — schema must exist before init-db-roles GRANTs on it.
         run: |
           kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/db-migrations --timeout=10m || \
-            (kubectl -n "$K8S_NAMESPACE" logs job/db-migrations; exit 1)
+            (kubectl -n "$K8S_NAMESPACE" logs job/db-migrations --tail=200; exit 1)
+
+      - name: Wait for init-db-roles Job
+        # backoffLimit=3 means this tolerates starting before migrations
+        # finish, but waiting for db-migrations first avoids the wasted retry.
+        run: |
+          kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/init-db-roles --timeout=5m || \
+            (kubectl -n "$K8S_NAMESPACE" logs job/init-db-roles --tail=200; exit 1)
 
       - name: Wait for rollouts
         run: |
