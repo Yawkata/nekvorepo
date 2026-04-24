@@ -32,23 +32,10 @@ module "vpc" {
   enable_dns_hostnames         = true
   enable_dns_support           = true
 
-  # EKS nodes live in private subnets and need egress to ECR / EKS API /
-  # STS / S3. A single NAT Gateway (~$32/mo + data) is the pragmatic
-  # staging default. For prod, flip single_nat_gateway=false to get one
-  # NAT per AZ (removes the single-AZ failure domain, triples the cost).
-  enable_nat_gateway = true
-  single_nat_gateway = true
-
-  # AWS Load Balancer Controller auto-discovers subnets by these tags.
-  # Public subnets host internet-facing ALBs; private subnets host
-  # internal ALBs and are used by EKS as node subnets.
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = "1"
-  }
-
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = "1"
-  }
+  # DEV: Set both to false. NAT Gateways cost ~$32/month EACH.
+  # PROD: enable_nat_gateway = true, single_nat_gateway = false
+  enable_nat_gateway = false
+  single_nat_gateway = false
 
   enable_flow_log = false
   # enable_flow_log                      = true
