@@ -12,7 +12,7 @@ resource "kubernetes_namespace" "chrono" {
   metadata {
     name = local.app_namespace
     labels = {
-      "app.kubernetes.io/managed-by" = "terraform"
+      "app.kubernetes.io/managed-by"       = "terraform"
       "pod-security.kubernetes.io/enforce" = "restricted"
       "pod-security.kubernetes.io/audit"   = "restricted"
     }

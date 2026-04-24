@@ -32,10 +32,10 @@ module "vpc" {
   one_nat_gateway_per_az = true
 
   # VPC Flow Logs → CloudWatch (30 d retention). Required for SEC in Well-Architected.
-  enable_flow_log                      = true
-  create_flow_log_cloudwatch_iam_role  = true
-  create_flow_log_cloudwatch_log_group = true
-  flow_log_max_aggregation_interval    = 60
+  enable_flow_log                                 = true
+  create_flow_log_cloudwatch_iam_role             = true
+  create_flow_log_cloudwatch_log_group            = true
+  flow_log_max_aggregation_interval               = 60
   flow_log_cloudwatch_log_group_retention_in_days = 30
 
   # Tags required by the AWS Load Balancer Controller and Cluster Autoscaler.

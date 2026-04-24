@@ -137,8 +137,8 @@ module "eks" {
 
       tags = {
         # Cluster Autoscaler discovery tags.
-        "k8s.io/cluster-autoscaler/enabled"                 = "true"
-        "k8s.io/cluster-autoscaler/${local.cluster_name}"   = "owned"
+        "k8s.io/cluster-autoscaler/enabled"               = "true"
+        "k8s.io/cluster-autoscaler/${local.cluster_name}" = "owned"
       }
     }
   }
