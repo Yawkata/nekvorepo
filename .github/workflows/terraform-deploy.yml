@@ -243,15 +243,20 @@ jobs:
             kustomize edit set image "$svc=$REG/$PROJECT_NAME/$svc:${{ github.sha }}"
           done
 
-      - name: Apply base manifests
-        run: kustomize build k8s/base | kubectl apply -f -
+      - name: Apply base manifests (server-side)
+        # Server-side apply tracks per-field ownership, so concurrent changes
+        # from the AWS LB Controller (Ingress status/annotations) don't cause
+        # "object has been modified" conflicts. --force-conflicts re-claims
+        # any field we legitimately own that a controller last touched.
+        run: |
+          kustomize build k8s/base | \
+            kubectl apply --server-side --force-conflicts --field-manager=github-actions -f -
 
       - name: Run init-db-roles Job
         run: |
           kubectl -n "$K8S_NAMESPACE" delete job init-db-roles --ignore-not-found
           kustomize build k8s/base | \
-            kubectl apply -f - --dry-run=client -o yaml | \
-            kubectl apply -f -
+            kubectl apply --server-side --force-conflicts --field-manager=github-actions -f -
           kubectl -n "$K8S_NAMESPACE" wait --for=condition=complete job/init-db-roles --timeout=5m || \
             (kubectl -n "$K8S_NAMESPACE" logs job/init-db-roles; exit 1)
 
