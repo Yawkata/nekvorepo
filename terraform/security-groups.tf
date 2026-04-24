@@ -2,6 +2,21 @@
 # Security groups — strict, source-SG-based (no CIDR-wide allows).
 ###############################################################################
 
+# Legacy placeholder — predates EKS. An old ENI outside terraform still holds a
+# reference, so AWS rejects deletion. Kept empty (no rules, no attachments) so
+# subsequent applies are no-ops. Remove with `aws ec2 delete-security-group`
+# once the lingering ENI is detached (check via `aws ec2 describe-network-
+# interfaces --filters Name=group-id,Values=<sg-id>`).
+resource "aws_security_group" "backend_sg" {
+  name        = "${var.project_name}-backend-sg"
+  description = "Legacy placeholder — pending manual cleanup."
+  vpc_id      = module.vpc.vpc_id
+
+  lifecycle {
+    ignore_changes = [description, tags, tags_all]
+  }
+}
+
 # RDS — only reachable from EKS nodes.
 resource "aws_security_group" "rds_sg" {
   name        = "${var.project_name}-rds-sg"

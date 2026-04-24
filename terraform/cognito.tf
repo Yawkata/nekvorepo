@@ -1,6 +1,11 @@
 resource "aws_cognito_user_pool" "pool" {
   name = "${var.project_name}-user-pool"
 
+  # PLUS tier unlocks Threat Protection (Advanced Security). The older
+  # "advanced_security_mode" field is only honoured on PLUS / legacy-feature
+  # pools; ESSENTIALS rejects it with FeatureUnavailableInTierException.
+  user_pool_tier = "PLUS"
+
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
