@@ -100,3 +100,22 @@ output "repo_service_role_arn" {
 output "workflow_service_role_arn" {
   value = aws_iam_role.workflow_service_role.arn
 }
+
+output "acm_certificate_arn" {
+  value       = aws_acm_certificate.primary.arn
+  description = "ACM cert covering apex + www. ALB Controller auto-discovers it from Ingress host rules."
+}
+
+output "route53_zone_id" {
+  value = aws_route53_zone.primary.zone_id
+}
+
+output "route53_name_servers" {
+  value       = aws_route53_zone.primary.name_servers
+  description = "Set these as the authoritative NS for chronovcs.com at your registrar."
+}
+
+output "dnssec_ds_record" {
+  value       = aws_route53_key_signing_key.primary.ds_record
+  description = "DS record — paste into the registrar's DNSSEC panel to complete the chain of trust."
+}

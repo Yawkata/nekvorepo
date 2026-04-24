@@ -1,6 +1,10 @@
 # Single ALB fronting the frontend (Next.js serves /api/* via its own route
 # handlers, which in turn call the cluster-internal services — no need to
 # expose backends publicly).
+#
+# TLS: the ALB Controller auto-discovers ACM certificates whose SANs match the
+# host rules below, so we don't hard-code the certificate-arn. Plain HTTP is
+# kept as a listener only to 301 to HTTPS via the `ssl-redirect` action.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -9,7 +13,9 @@ metadata:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/healthcheck-path: /
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
     alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
@@ -18,10 +24,20 @@ metadata:
       routing.http.drop_invalid_header_fields.enabled=true,
       idle_timeout.timeout_seconds=60,
       access_logs.s3.enabled=false
-    # Switch to [{"HTTPS":443}] + cert-ARN once a domain + ACM cert exist.
 spec:
   rules:
-    - http:
+    - host: chronovcs.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    - host: www.chronovcs.com
+      http:
         paths:
           - path: /
             pathType: Prefix

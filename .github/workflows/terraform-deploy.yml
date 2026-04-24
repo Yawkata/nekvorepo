@@ -129,6 +129,17 @@ jobs:
           put "$SSM_PREFIX/ses_configuration_set_name"         "$(echo "$OUTS" | jq -r .ses_configuration_set_name.value)"       String
           put "$SSM_PREFIX/ses_from_email"                     "$(echo "$OUTS" | jq -r .ses_sender_email.value)"                 String
           put "$SSM_PREFIX/frontend_url"                       "$(echo "$OUTS" | jq -r .frontend_url.value)"                     String
+          put "$SSM_PREFIX/acm_certificate_arn"                "$(echo "$OUTS" | jq -r .acm_certificate_arn.value)"              String
+          put "$SSM_PREFIX/route53_zone_id"                    "$(echo "$OUTS" | jq -r .route53_zone_id.value)"                  String
+
+          # Surface DNSSEC DS record and NS delegation — operator must paste
+          # these into the domain registrar (one-time, out-of-band).
+          echo "::group::Route 53 delegation — set these at the registrar"
+          echo "Name servers:"
+          echo "$OUTS" | jq -r '.route53_name_servers.value[]'
+          echo "DS record (DNSSEC):"
+          echo "$OUTS" | jq -r '.dnssec_ds_record.value'
+          echo "::endgroup::"
 
           # Per-service passwords.
           put "$SSM_PREFIX/identity_db_password" "$IDN_PW" SecureString
@@ -274,10 +285,64 @@ jobs:
             (kubectl -n "$K8S_NAMESPACE" logs job/init-db-roles --tail=200; exit 1)
 
       - name: Wait for rollouts
+        id: rollouts
         run: |
           for d in identity-service repo-service workflow-service frontend; do
             kubectl -n "$K8S_NAMESPACE" rollout status deploy/"$d" --timeout=10m
           done
+
+      # Rollout stalls (progress deadline exceeded) give no clue on their own.
+      # Dump deployment events, pod status, probe failures, logs, and ESO sync
+      # state for every app Deployment so the failure is self-explaining.
+      - name: Diagnose failed rollout
+        if: failure() && steps.rollouts.conclusion == 'failure'
+        run: |
+          set +e
+          echo "::group::Nodes"
+          kubectl get nodes -o wide
+          echo "::endgroup::"
+
+          echo "::group::ExternalSecrets sync status"
+          kubectl -n "$K8S_NAMESPACE" get externalsecrets -o wide
+          kubectl -n "$K8S_NAMESPACE" describe externalsecret chrono-shared
+          kubectl -n "$K8S_NAMESPACE" describe externalsecret chrono-db
+          echo "::endgroup::"
+
+          for d in identity-service repo-service workflow-service frontend; do
+            echo "::group::Deployment $d"
+            kubectl -n "$K8S_NAMESPACE" describe deploy "$d"
+            echo "::endgroup::"
+
+            echo "::group::Pods for $d"
+            kubectl -n "$K8S_NAMESPACE" get pods \
+              -l app.kubernetes.io/name="$d" -o wide
+            echo "::endgroup::"
+
+            # Per-pod: describe (events/probe failures) + current & previous
+            # container logs. --previous catches crash-loop stack traces that
+            # are gone from the live container.
+            for p in $(kubectl -n "$K8S_NAMESPACE" get pods \
+                        -l app.kubernetes.io/name="$d" \
+                        -o jsonpath='{.items[*].metadata.name}'); do
+              echo "::group::describe pod/$p"
+              kubectl -n "$K8S_NAMESPACE" describe pod "$p"
+              echo "::endgroup::"
+
+              echo "::group::logs pod/$p (current)"
+              kubectl -n "$K8S_NAMESPACE" logs "$p" --tail=200 --all-containers
+              echo "::endgroup::"
+
+              echo "::group::logs pod/$p (previous)"
+              kubectl -n "$K8S_NAMESPACE" logs "$p" --tail=200 \
+                --all-containers --previous 2>/dev/null || echo "(no previous)"
+              echo "::endgroup::"
+            done
+          done
+
+          echo "::group::Recent namespace events"
+          kubectl -n "$K8S_NAMESPACE" get events \
+            --sort-by=.lastTimestamp | tail -n 100
+          echo "::endgroup::"
 
       - name: Print ingress URL
         run: kubectl -n "$K8S_NAMESPACE" get ingress chrono -o wide
