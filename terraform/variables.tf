@@ -34,25 +34,8 @@ variable "ses_sender_email" {
 
 variable "frontend_url" {
   type        = string
-  description = "Public URL embedded in invite emails."
-  default     = "https://chronovcs.com"
-}
-
-variable "domain_name" {
-  type        = string
-  description = "Apex domain for the public site. A Route 53 public zone is created for this name."
-  default     = "chronovcs.com"
-}
-
-variable "create_alb_alias_records" {
-  type        = bool
-  description = <<-EOT
-    Create Route 53 A-alias records pointing chronovcs.com + www at the ALB.
-    Requires the `chrono` Ingress (and therefore its ALB) to already exist.
-    Leave false on first apply; flip to true on a subsequent apply once the
-    Ingress has reconciled.
-  EOT
-  default     = true
+  description = "Public URL embedded in invite emails. Update after ALB DNS is known."
+  default     = "http://localhost:3000"
 }
 
 variable "cluster_version" {
