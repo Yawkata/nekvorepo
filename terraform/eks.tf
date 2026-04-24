@@ -24,11 +24,14 @@ module "eks" {
   subnet_ids               = module.vpc.private_subnets
   control_plane_subnet_ids = module.vpc.private_subnets
 
-  # Restricted-but-enabled public endpoint — lets GitHub Actions reach the API
-  # without a bastion while keeping random internet scanners out. Tighten
-  # var.allowed_ips to your runner egress range for a fully hardened stance.
+  # Public endpoint open to the internet — the EKS API is still gated by IAM
+  # auth and Kubernetes RBAC, so CIDR restriction is defence-in-depth, not the
+  # primary control. GitHub-hosted runners use a large, shifting IP range that
+  # can't be pinned in advance, so 0.0.0.0/0 is the pragmatic choice for CI.
+  # To tighten later: move to self-hosted runners in the VPC and flip to
+  # private-only access.
   cluster_endpoint_public_access       = true
-  cluster_endpoint_public_access_cidrs = length(var.allowed_ips) > 0 ? var.allowed_ips : ["0.0.0.0/0"]
+  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
   cluster_endpoint_private_access      = true
 
   # Envelope-encrypt Kubernetes Secrets with a customer-managed KMS key.
