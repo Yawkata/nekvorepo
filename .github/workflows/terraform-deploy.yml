@@ -278,6 +278,23 @@ jobs:
             sleep 15
           done
 
+      - name: Drop in-cluster resources from Terraform state (avoids 401 during destroy)
+        if: steps.ids.outputs.cluster_present == 'true'
+        shell: bash
+        run: |
+          # Helm releases + kubernetes_* resources authenticate to the EKS API
+          # via `aws eks get-token`. During destroy, the `aws_eks_access_entry`
+          # that grants the runner cluster-admin can be destroyed in parallel
+          # with the helm_release resources; if the entry goes first, every
+          # remaining helm_release call fails with 401. Since the whole
+          # cluster is about to be deleted, uninstalling charts is pointless —
+          # just forget them in state and let the cluster take them down.
+          for addr in $(terraform state list 2>/dev/null \
+              | grep -E '^(helm_release\.|kubernetes_)' || true); do
+            echo "state rm $addr"
+            terraform state rm "$addr" || true
+          done
+
       - name: Sweep residual Route 53 records (safety net for ExternalDNS)
         if: steps.ids.outputs.cluster_present == 'true' && steps.ids.outputs.zone_id != ''
         shell: bash
