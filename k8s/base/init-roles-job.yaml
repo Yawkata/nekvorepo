@@ -1,0 +1,34 @@
+# Creates per-service DB login users. Safe to re-run — refreshes passwords.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-db-roles
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: init-db-roles
+    spec:
+      serviceAccountName: db-migrator
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: init-roles
+          image: database-migrations
+          command: ["python", "/app/init_roles.py"]
+          envFrom:
+            - configMapRef: { name: chrono-config }
+            - secretRef:    { name: chrono-db }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repo-service
+  labels:
+    app.kubernetes.io/name: repo-service
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: repo-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: repo-service
+    spec:
+      serviceAccountName: repo-service
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: repo-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: repo-service
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef: { name: chrono-config }
+            - secretRef:    { name: chrono-shared }
+            - secretRef:    { name: chrono-db }
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: chrono-db, key: REPO_DATABASE_URL }
+            - name: SQS_CACHE_INVALIDATION_QUEUE_URL
+              valueFrom:
+                secretKeyRef: { name: chrono-shared, key: REPO_CACHE_INVALIDATION_QUEUE_URL }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 1000m, memory: 768Mi }
+          livenessProbe:
+            httpGet: { path: /ping, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet: { path: /ping, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: efs-drafts
+              mountPath: /mnt/efs/drafts
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: efs-drafts
+          persistentVolumeClaim:
+            claimName: efs-drafts
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repo-service
+spec:
+  selector:
+    app.kubernetes.io/name: repo-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: repo-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: repo-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

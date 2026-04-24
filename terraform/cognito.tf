@@ -32,19 +32,17 @@ resource "aws_cognito_user_pool" "pool" {
     }
   }
 
-  # DEV: "OFF" (Advanced security costs ~$0.050 per active user)
-  # PROD: advanced_security_mode = "AUDIT" or "ENFORCED"
   user_pool_add_ons {
-    advanced_security_mode = "OFF"
+    advanced_security_mode = "ENFORCED"
   }
 
-  # DEV: "OFF" (Saves you from getting SMS charges if you don't have SES set up)
-  # PROD: mfa_configuration = "OPTIONAL"
-  mfa_configuration = "OFF"
+  mfa_configuration = "OPTIONAL"
 
-  # software_token_mfa_configuration {
-  #   enabled = true
-  # }
+  software_token_mfa_configuration {
+    enabled = true
+  }
+
+  deletion_protection = "ACTIVE"
 
   schema {
     attribute_data_type      = "String"

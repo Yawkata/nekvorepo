@@ -1,0 +1,37 @@
+# Keep ≥2 replicas serving during voluntary disruptions (node drains,
+# cluster upgrades). Each deployment has minReplicas=3 on its HPA.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: identity-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: identity-service }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: repo-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: repo-service }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: workflow-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: workflow-service }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: frontend }
