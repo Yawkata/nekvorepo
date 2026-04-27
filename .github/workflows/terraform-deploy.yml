@@ -409,16 +409,25 @@ jobs:
 
       # RDS has deletion_protection=true (production-correct). Flip it off
       # in-place so destroy can proceed when the operator explicitly asks.
+      # Tolerant of "instance already gone" — the previous destroy run may
+      # have deleted it before failing on a later resource.
       - name: Disable RDS deletion protection
         run: |
+          set -euo pipefail
+          if ! aws rds describe-db-instances \
+                --db-instance-identifier "${PROJECT_NAME}-db" \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "RDS instance ${PROJECT_NAME}-db already gone — skipping."
+            exit 0
+          fi
           aws rds modify-db-instance \
             --db-instance-identifier "${PROJECT_NAME}-db" \
             --no-deletion-protection \
             --apply-immediately \
-            --region "$AWS_REGION" || true
+            --region "$AWS_REGION"
           aws rds wait db-instance-available \
             --db-instance-identifier "${PROJECT_NAME}-db" \
-            --region "$AWS_REGION" || true
+            --region "$AWS_REGION"
 
       # Cognito user pool — deletion_protection=ACTIVE blocks DeleteUserPool.
       # update-user-pool on a PLUS-tier pool requires --user-pool-add-ons
@@ -435,9 +444,15 @@ jobs:
             exit 0
           fi
 
+          # The pool's attributes_require_verification_before_update=["email"]
+          # forces every UpdateUserPool call to also send a matching
+          # --auto-verified-attributes, otherwise AWS rejects with
+          # "All attributes in AttributesRequireVerificationBeforeUpdate
+          # must exist in AutoVerifiedAttributes".
           aws cognito-idp update-user-pool \
             --user-pool-id "$POOL_ID" \
             --deletion-protection INACTIVE \
+            --auto-verified-attributes email \
             --user-pool-add-ons AdvancedSecurityMode=ENFORCED \
             --region "$AWS_REGION"
 
