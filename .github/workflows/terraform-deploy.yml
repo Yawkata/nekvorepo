@@ -544,10 +544,10 @@ jobs:
       - name: Terraform destroy
         run: terraform destroy -auto-approve
 
+      # delete-parameters caps at 10 names per call, so batch with xargs.
       - name: Purge SSM parameters
         run: |
-          aws ssm delete-parameters --region "$AWS_REGION" --names $(
-            aws ssm describe-parameters --region "$AWS_REGION" \
-              --parameter-filters "Key=Name,Option=BeginsWith,Values=$SSM_PREFIX/" \
-              --query 'Parameters[].Name' --output text
-          ) || true
+          aws ssm describe-parameters --region "$AWS_REGION" \
+            --parameter-filters "Key=Name,Option=BeginsWith,Values=$SSM_PREFIX/" \
+            --query 'Parameters[].Name' --output text | tr '\t' '\n' | \
+          xargs -r -n 10 aws ssm delete-parameters --region "$AWS_REGION" --names
