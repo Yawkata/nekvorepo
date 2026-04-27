@@ -347,10 +347,11 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::064057453791:role/GitHubActions-OIDC-Role
           aws-region: ${{ env.AWS_REGION }}
-      - name: Install kubectl
+      - name: Install kubectl + helm
         run: |
           curl -sSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
           chmod +x /usr/local/bin/kubectl
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
       - name: Configure kubeconfig (skip if cluster gone)
         id: kube
@@ -384,6 +385,54 @@ jobs:
             if [ "$COUNT" = "0" ]; then echo "LBs drained"; break; fi
             echo "Waiting for $COUNT LB(s) to drain…"
             sleep 10
+          done
+
+      # Strip finalizers from CRs that block namespace teardown once their
+      # operator goes away. Helm-uninstall the operators while they're still
+      # online so CRDs unwind cleanly, THEN delete the namespaces. If we let
+      # terraform do this, it tears down the operator first and the orphaned
+      # CRs hang the namespace forever (5-min provider timeout, then
+      # "context deadline exceeded").
+      - name: Drain external-secrets + helm releases
+        if: steps.kube.outcome == 'success'
+        run: |
+          set -euo pipefail
+
+          # Remove finalizers on any leftover ExternalSecrets / SecretStores
+          # so helm uninstall + namespace delete don't get stuck.
+          for kind in externalsecrets clustersecretstores secretstores clusterexternalsecrets; do
+            if kubectl get crd "${kind}.external-secrets.io" >/dev/null 2>&1; then
+              kubectl get "$kind" -A -o json 2>/dev/null | jq -r \
+                '.items[] | "\(.metadata.namespace // "-") \(.metadata.name)"' | \
+                while read ns name; do
+                  if [ "$ns" = "-" ]; then
+                    kubectl patch "$kind" "$name" --type=merge \
+                      -p '{"metadata":{"finalizers":null}}' || true
+                  else
+                    kubectl -n "$ns" patch "$kind" "$name" --type=merge \
+                      -p '{"metadata":{"finalizers":null}}' || true
+                  fi
+                done
+            fi
+          done
+
+          # Helm-uninstall in dependency order. Ignore "release not found".
+          for r in external-secrets aws-load-balancer-controller cluster-autoscaler; do
+            ns="kube-system"
+            [ "$r" = "external-secrets" ] && ns="external-secrets"
+            helm -n "$ns" uninstall "$r" --wait --timeout 5m 2>/dev/null || true
+          done
+
+          # Delete the namespaces we manage from terraform. Force-strip
+          # finalizers if a namespace hangs in Terminating.
+          for ns in external-secrets "$K8S_NAMESPACE"; do
+            kubectl delete namespace "$ns" --ignore-not-found --timeout=3m || true
+            if kubectl get namespace "$ns" >/dev/null 2>&1; then
+              echo "Namespace $ns stuck — stripping finalizers."
+              kubectl get namespace "$ns" -o json | \
+                jq '.spec.finalizers = []' | \
+                kubectl replace --raw "/api/v1/namespaces/$ns/finalize" -f - || true
+            fi
           done
 
   terraform-destroy:
