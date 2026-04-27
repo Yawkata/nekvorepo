@@ -44,12 +44,16 @@ resource "aws_kms_key" "ebs" {
         Action   = "kms:*"
         Resource = "*"
       },
+      # Allow any principal in this account to use the key, but only when
+      # the request comes through EC2 (i.e. EBS volume create/attach during
+      # node-group launches). This is the AWS-documented "via service"
+      # pattern and avoids hard-coding the AWSServiceRoleForAutoScaling SLR
+      # ARN, which doesn't exist until autoscaling is first used in the
+      # account and breaks plan-from-clean-state.
       {
-        Sid    = "AllowAutoscalingUse"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-        }
+        Sid       = "AllowEC2ViaServiceInAccount"
+        Effect    = "Allow"
+        Principal = { AWS = "*" }
         Action = [
           "kms:Encrypt",
           "kms:Decrypt",
@@ -59,6 +63,12 @@ resource "aws_kms_key" "ebs" {
           "kms:CreateGrant",
         ]
         Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+            "kms:ViaService"    = "ec2.${var.aws_region}.amazonaws.com"
+          }
+        }
       },
     ]
   })
