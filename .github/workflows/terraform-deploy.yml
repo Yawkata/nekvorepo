@@ -420,15 +420,35 @@ jobs:
             --db-instance-identifier "${PROJECT_NAME}-db" \
             --region "$AWS_REGION" || true
 
-      # Cognito user pool — deletion_protection=ACTIVE needs INACTIVE first.
+      # Cognito user pool — deletion_protection=ACTIVE blocks DeleteUserPool.
+      # update-user-pool on a PLUS-tier pool requires --user-pool-add-ons
+      # (threat protection is mandatory there), otherwise the call returns
+      # InvalidParameterException. We also poll until the change propagates
+      # before letting terraform destroy try to delete the pool.
       - name: Disable Cognito deletion protection
         run: |
+          set -euo pipefail
           POOL_ID=$(aws ssm get-parameter --name "$SSM_PREFIX/cognito_pool_id" \
             --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-          if [ -n "$POOL_ID" ]; then
-            aws cognito-idp update-user-pool --user-pool-id "$POOL_ID" \
-              --deletion-protection INACTIVE --region "$AWS_REGION" || true
+          if [ -z "$POOL_ID" ]; then
+            echo "No cognito_pool_id in SSM — pool already gone, skipping."
+            exit 0
           fi
+
+          aws cognito-idp update-user-pool \
+            --user-pool-id "$POOL_ID" \
+            --deletion-protection INACTIVE \
+            --user-pool-add-ons AdvancedSecurityMode=ENFORCED \
+            --region "$AWS_REGION"
+
+          for i in {1..30}; do
+            STATE=$(aws cognito-idp describe-user-pool \
+              --user-pool-id "$POOL_ID" --region "$AWS_REGION" \
+              --query 'UserPool.DeletionProtection' --output text)
+            echo "DeletionProtection=$STATE"
+            [ "$STATE" = "INACTIVE" ] && break
+            sleep 2
+          done
 
       - name: Terraform destroy
         run: terraform destroy -auto-approve
