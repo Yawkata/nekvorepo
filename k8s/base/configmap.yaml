@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chrono-config
+data:
+  AWS_REGION: "us-east-1"
+  ENV: "prod"
+  PROJECT_NAME: "chrono-vcs"
+  ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+  EFS_MOUNT_PATH: "/mnt/efs/drafts"
+  EFS_DRAFTS_ROOT: "/mnt/efs/drafts"
+  # Internal service DNS — cluster-scoped, TLS-terminated at the ALB only.
+  WORKFLOW_SERVICE_URL: "http://workflow-service:8000"
+  REPO_SERVICE_URL: "http://repo-service:8000"
+  IDENTITY_SERVICE_URL: "http://identity-service:8000"

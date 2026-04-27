@@ -1,0 +1,37 @@
+# One-shot schema migrations. The workflow runs this before rolling app pods.
+# ttlSecondsAfterFinished cleans up the Job object after 5 minutes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrations
+  annotations:
+    # Force a new Job on every kubectl apply — Jobs are immutable.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-migrations
+    spec:
+      serviceAccountName: db-migrator
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrator
+          image: database-migrations
+          envFrom:
+            - configMapRef: { name: chrono-config }
+            - secretRef:    { name: chrono-db }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

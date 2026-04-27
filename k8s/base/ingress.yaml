@@ -1,0 +1,32 @@
+# Single ALB fronting the frontend (Next.js serves /api/* via its own route
+# handlers, which in turn call the cluster-internal services — no need to
+# expose backends publicly).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chrono
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/success-codes: 200-399
+    alb.ingress.kubernetes.io/load-balancer-attributes: >-
+      routing.http.drop_invalid_header_fields.enabled=true,
+      idle_timeout.timeout_seconds=60,
+      access_logs.s3.enabled=false
+    # Switch to [{"HTTPS":443}] + cert-ARN once a domain + ACM cert exist.
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

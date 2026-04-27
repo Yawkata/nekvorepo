@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: chrono
+
+resources:
+  - configmap.yaml
+  - secretstore.yaml
+  - externalsecrets.yaml
+  - efs-pv.yaml
+  - serviceaccounts.yaml
+  - identity-service.yaml
+  - repo-service.yaml
+  - workflow-service.yaml
+  - frontend.yaml
+  - migrations-job.yaml
+  - init-roles-job.yaml
+  - ingress.yaml
+  - networkpolicies.yaml
+  - poddisruptionbudgets.yaml
+
+images:
+  - name: frontend
+    newName: PLACEHOLDER_ECR/chrono-vcs/frontend
+    newTag: PLACEHOLDER_TAG
+  - name: identity-service
+    newName: PLACEHOLDER_ECR/chrono-vcs/identity-service
+    newTag: PLACEHOLDER_TAG
+  - name: repo-service
+    newName: PLACEHOLDER_ECR/chrono-vcs/repo-service
+    newTag: PLACEHOLDER_TAG
+  - name: workflow-service
+    newName: PLACEHOLDER_ECR/chrono-vcs/workflow-service
+    newTag: PLACEHOLDER_TAG
+  - name: database-migrations
+    newName: PLACEHOLDER_ECR/chrono-vcs/database-migrations
+    newTag: PLACEHOLDER_TAG

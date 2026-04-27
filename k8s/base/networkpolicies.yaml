@@ -1,0 +1,89 @@
+# Zero-trust per-service policies. Starts with deny-all, then opens the
+# minimum ingress/egress each service actually needs.
+# VPC CNI with network policy support is enabled by the vpc-cni addon.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Allow DNS for everything in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Frontend: accept from ALB (anywhere, since ALB target-type=ip), egress to
+# the three backends + AWS APIs (443).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: frontend }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - {}
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [identity-service, repo-service, workflow-service]
+      ports: [{ protocol: TCP, port: 8000 }]
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports: [{ protocol: TCP, port: 443 }]
+---
+# Backends: accept from frontend + sibling backends; egress to RDS, EFS, AWS APIs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backends
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [identity-service, repo-service, workflow-service]
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [frontend, identity-service, repo-service, workflow-service]
+      ports: [{ protocol: TCP, port: 8000 }]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [identity-service, repo-service, workflow-service]
+      ports: [{ protocol: TCP, port: 8000 }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports:
+        - { protocol: TCP, port: 5432 }   # RDS
+        - { protocol: TCP, port: 2049 }   # EFS
+        - { protocol: TCP, port: 443 }    # AWS APIs
+        - { protocol: TCP, port: 80 }     # IMDS bootstrap (rare)
