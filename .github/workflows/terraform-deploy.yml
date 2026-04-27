@@ -353,30 +353,40 @@ jobs:
           chmod +x /usr/local/bin/kubectl
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
+      # Cluster may already be gone (re-run after a successful destroy, or
+      # apply that failed before EKS was created). Probe with describe-cluster
+      # first so the log shows a clean skip instead of a scary exit-254 from
+      # update-kubeconfig.
       - name: Configure kubeconfig (skip if cluster gone)
         id: kube
-        continue-on-error: true
-        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+        run: |
+          if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+            echo "kube_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cluster $CLUSTER_NAME not found — skipping K8s drain steps."
+            echo "kube_present=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Delete Ingress first — releases the ALB + ENIs
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           kubectl -n "$K8S_NAMESPACE" delete ingress --all --ignore-not-found --timeout=5m || true
 
       - name: Delete Services of type LoadBalancer
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           kubectl get svc -A -o json | jq -r \
             '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | \
             while read ns name; do kubectl -n "$ns" delete svc "$name" --ignore-not-found --timeout=5m; done
 
       - name: Delete application namespace (clears PVCs/EFS APs)
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           kubectl delete namespace "$K8S_NAMESPACE" --ignore-not-found --timeout=10m || true
 
       - name: Wait for load-balancer cleanup
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           for i in {1..60}; do
             COUNT=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
@@ -400,7 +410,7 @@ jobs:
       # APIServices whose backing service is gone or whose Available
       # condition is False before we touch namespaces.
       - name: Remove broken aggregated APIServices
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           kubectl get apiservices -o json | jq -r \
             '.items[] | select(.spec.service != null) |
@@ -412,7 +422,7 @@ jobs:
             done
 
       - name: Drain external-secrets + helm releases
-        if: steps.kube.outcome == 'success'
+        if: steps.kube.outputs.kube_present == 'true'
         run: |
           set -euo pipefail
 
