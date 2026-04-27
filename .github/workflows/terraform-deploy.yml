@@ -393,6 +393,24 @@ jobs:
       # terraform do this, it tears down the operator first and the orphaned
       # CRs hang the namespace forever (5-min provider timeout, then
       # "context deadline exceeded").
+      # Stale aggregated APIServices (metrics.k8s.io is the usual offender)
+      # break namespace teardown with NamespaceDeletionDiscoveryFailure even
+      # when no finalizers remain, because the namespace controller refuses
+      # to finalize while API discovery is incomplete. Delete any
+      # APIServices whose backing service is gone or whose Available
+      # condition is False before we touch namespaces.
+      - name: Remove broken aggregated APIServices
+        if: steps.kube.outcome == 'success'
+        run: |
+          kubectl get apiservices -o json | jq -r \
+            '.items[] | select(.spec.service != null) |
+              select((.status.conditions // []) | any(.type=="Available" and .status!="True")) |
+              .metadata.name' | \
+            while read svc; do
+              echo "Deleting broken APIService $svc"
+              kubectl delete apiservice "$svc" --ignore-not-found
+            done
+
       - name: Drain external-secrets + helm releases
         if: steps.kube.outcome == 'success'
         run: |
@@ -490,6 +508,15 @@ jobs:
             --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
           if [ -z "$POOL_ID" ]; then
             echo "No cognito_pool_id in SSM — pool already gone, skipping."
+            exit 0
+          fi
+
+          # SSM can hold a stale ID after a partial destroy. Verify the pool
+          # actually exists before trying to update it, otherwise AWS returns
+          # ResourceNotFoundException and the step fails.
+          if ! aws cognito-idp describe-user-pool \
+                --user-pool-id "$POOL_ID" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Pool $POOL_ID no longer exists — skipping."
             exit 0
           fi
 
