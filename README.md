@@ -68,7 +68,7 @@ The platform is designed around a content-addressed storage model (SHA-256 trees
 
 The system is split into three FastAPI microservices behind an ALB, a Next.js frontend, and a set of supporting AWS services. The ALB routes by non-overlapping path prefix; pods talk to each other over HTTPS within the cluster.
 
-https://github.com/Yawkata/nekvorepo/blob/main/docs/diagrams/Architecture-diagram.png?raw=true
+![Architecture diagram](docs/diagrams/architecture.png)
 
 **High-level flow:**
 
@@ -88,7 +88,7 @@ https://github.com/Yawkata/nekvorepo/blob/main/docs/diagrams/Architecture-diagra
 
 The relational schema is normalized around content-addressed objects. Trees and blobs are deduplicated; commits reference trees via a hash chain.
 
-https://github.com/Yawkata/nekvorepo/blob/main/docs/diagrams/database.PNG?raw=true
+![Database Schema](docs/diagrams/database.png)
 
 | Table | Purpose |
 | --- | --- |
