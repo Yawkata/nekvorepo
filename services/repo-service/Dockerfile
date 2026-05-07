@@ -48,7 +48,7 @@ RUN mkdir -p /stage/home/nonroot/.postgresql /stage/mnt/efs/drafts && \
 # =========================================================================
 FROM cgr.dev/chainguard/python:latest AS runtime
 LABEL org.opencontainers.image.description="Repo Service — draft management and EFS file storage" \
-      org.opencontainers.image.source="https://github.com/Yawkata/nekvorepo"
+      org.opencontainers.image.source="https://github.com/Yawkata/ChronoVCS"
 
 WORKDIR /app
 

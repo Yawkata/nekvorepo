@@ -48,7 +48,7 @@ RUN npm run build && \
 # =========================================================================
 FROM cgr.dev/chainguard/wolfi-base:latest AS runner
 LABEL org.opencontainers.image.description="Frontend (Next.js) for VCS-Hybrid App" \
-      org.opencontainers.image.source="https://github.com/Yawkata/nekvorepo"
+      org.opencontainers.image.source="https://github.com/Yawkata/ChronoVCS"
 
 USER root
 # wolfi-base already ships the `nonroot` user/group (uid/gid 65532).

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: services/database-migrations/Dockerfile
-    container_name: nekvo-migrator
+    container_name: chrono-migrator
     env_file: .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -17,7 +17,7 @@ services:
     build:
       context: .
       dockerfile: services/database-migrations/Dockerfile
-    container_name: nekvo-init-roles
+    container_name: chrono-init-roles
     env_file: .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -115,7 +115,7 @@ services:
   # In production (EKS + EFS CSI) an access point sets ownership instead.
   efs-init:
     image: cgr.dev/chainguard/bash:latest
-    container_name: nekvo-efs-init
+    container_name: chrono-efs-init
     user: "0:0"
     entrypoint: ["/bin/bash", "-c"]
     command:

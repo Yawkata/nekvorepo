@@ -1,4 +1,4 @@
-# nekvorepo
+# ChronoVCS
 
 > A cloud-native, web-based version control platform built on AWS — bringing repository management, role-based collaboration, and a full commit-review workflow to the browser.
 
@@ -34,13 +34,13 @@
 
 ## Overview
 
-**nekvorepo** is a cloud-native version control system delivered entirely through a web browser. Users create repositories, invite collaborators, edit files in an in-browser IDE, propose commits, and route them through a structured review workflow — all without ever touching a `git` CLI.
+**ChronoVCS** is a cloud-native version control system delivered entirely through a web browser. Users create repositories, invite collaborators, edit files in an in-browser IDE, propose commits, and route them through a structured review workflow — all without ever touching a `git` CLI.
 
 The platform is designed around a content-addressed storage model (SHA-256 trees and blobs), an explicit **draft → commit → review** state machine, and a strict role-based permission model. The infrastructure is fully defined in Terraform and runs on AWS EKS with auto-scaling, blue/green deployments, and event-driven background workers.
 
 <!-- <product_demo_GIF> -->
 
-### Why nekvorepo?
+### Why ChronoVCS?
 
 - **Browser-native VCS** — no local clones, no CLI, no merge conflicts left to chance.
 - **Structured review** — every change is a proposed commit that an authorized reviewer must approve or reject before it becomes part of history.
@@ -150,7 +150,7 @@ Key endpoints: `POST /v1/repos/create`, `POST /v1/repos/{id}/commits`, `POST /v1
 ## Repository Layout
 
 ```
-nekvorepo/
+ChronoVCS/
 ├── services/
 │   ├── identity-service/       # FastAPI — auth, invites, role source of truth
 │   ├── repo-service/           # FastAPI — drafts, files, conflicts, archives
@@ -185,8 +185,8 @@ nekvorepo/
 **1. Clone and configure environment**
 
 ```bash
-git clone https://github.com/<your-org>/nekvorepo.git
-cd nekvorepo
+git clone https://github.com/<your-org>/ChronoVCS.git
+cd ChronoVCS
 cp .env.example .env       # fill in AWS creds, Cognito IDs, S3 bucket, queue URLs, ...
 ```
 

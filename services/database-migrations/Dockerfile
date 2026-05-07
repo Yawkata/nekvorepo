@@ -32,7 +32,7 @@ RUN set -eux; \
 # =========================================================================
 FROM cgr.dev/chainguard/python:latest AS runtime
 LABEL org.opencontainers.image.description="Database Migrations for VCS-Hybrid App" \
-      org.opencontainers.image.source="https://github.com/Yawkata/nekvorepo"
+      org.opencontainers.image.source="https://github.com/Yawkata/ChronoVCS"
 
 WORKDIR /app
 

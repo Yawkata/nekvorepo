@@ -53,7 +53,7 @@ RUN mkdir -p /stage/home/nonroot/.postgresql /stage/mnt/efs/drafts && \
 # =========================================================================
 FROM cgr.dev/chainguard/python:latest AS runtime
 LABEL org.opencontainers.image.description="Identity Microservice for VCS-Hybrid App" \
-      org.opencontainers.image.source="https://github.com/Yawkata/nekvorepo"
+      org.opencontainers.image.source="https://github.com/Yawkata/ChronoVCS"
 
 WORKDIR /app
 

@@ -120,7 +120,7 @@ export default function DraftPage() {
   // list_files only returns files (empty folders are invisible), so we cache
   // the folders the user has created in this draft until a file lands inside
   // them. Scoped per draft to avoid cross-draft leakage.
-  const foldersStorageKey = `nekvo:draft-folders:${repoId}:${draftId}`;
+  const foldersStorageKey = `chrono:draft-folders:${repoId}:${draftId}`;
 
   // Load cached folders once we have the draft id.
   useEffect(() => {
